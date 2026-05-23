@@ -1,8 +1,14 @@
+![MIT License](https://img.shields.io/badge/license-MIT-purple)
+![Node.js](https://img.shields.io/badge/node-%3E%3D18-blue)
+![MCP Compatible](https://img.shields.io/badge/MCP-compatible-success)
+
 # EVIDE MCP Server v1.1.0
 
 MCP server connecting AI agents to the [EVIDE External Evidentiary Deposit](https://app.certifywebcontent.com) API.
 
 EVIDE crystallizes AI agent decisions, escalations, and governance states into independently verifiable forensic records -- anchored to a verified human identity, timestamped server-side in UTC, and externalized before consequence propagation begins.
+
+> EVIDE is not an execution-control layer. It is an external evidentiary crystallization layer operating at the responsibility closure boundary.
 
 ---
 
