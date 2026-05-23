@@ -1,0 +1,34 @@
+{
+  "name": "evide-mcp",
+  "version": "1.1.0",
+  "description": "MCP server for AI agents to deposit evidentiary records into EVIDE. Requires DAPI verified identity and active EVIDE subscription.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "evide-mcp": "./index.js"
+  },
+  "keywords": [
+    "mcp",
+    "evide",
+    "evidentiary",
+    "ai-governance",
+    "forensic",
+    "dapi",
+    "crystallization",
+    "accountability",
+    "model-context-protocol"
+  ],
+  "author": "Dott. Emanuel Celano, Informatica in Azienda <info@informaticainazienda.it>",
+  "license": "MIT",
+  "homepage": "https://app.certifywebcontent.com/docs/evide-mcp/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emanuelcelano/evide-mcp"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
