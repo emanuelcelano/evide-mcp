@@ -129,7 +129,51 @@ Deposit a finalized AI decision as an evidentiary record.
 }
 ```
 
-Returns: `evide_id`, `intake_hash`, `intake_timestamp_utc`, Forensic Cross-Check state.
+**Optional external artifacts** (`evidence_references`):
+
+```
+{
+  "source_reference": "CDR-2026-00423",
+  "decision_type": "claim_assessment",
+  "decision_summary": "Claim rejected: documentation inconsistent with policy terms.",
+  "evidence_references": [
+    {
+      "artifact_type": "document",
+      "pointer": "s3://evidence-store/claim-8812/policy.pdf",
+      "declared_origin": "policy_management_system",
+      "declared_relationship": "supporting_document",
+      "declared_retention_status": "persistent_storage",
+      "hash_algorithm": "sha256",
+      "hash_value": "9f2c7a1b4e6d...",
+      "hash_scope": "full_file",
+      "hashed_by": "policy_management_system"
+    }
+  ]
+}
+```
+
+EVIDE anchors the **declaration** that an artifact exists — the file itself is never uploaded, and EVIDE never computes or verifies its hash. That is why `hashed_by` is mandatory whenever a hash is declared: an anchored digest with no stated provenance would be worthless. The client validates this before the request leaves, so a missing field produces a message naming it rather than a generic server rejection. Nothing is inferred: `hashed_by` is never filled in with the agent identity, because claiming the agent computed a digest it merely relayed would be a false provenance claim.
+
+Declaring the array automatically sets `extensions: ["evidence_references"]`. That registry is opt-in in both directions — a block present but undeclared is rejected, and a declaration with no content is rejected too — so the client keeps the two aligned by construction.
+
+**Optional chain parameters** (Evidentiary Continuity):
+
+```
+{
+  "source_reference": "CDR-2026-00422",
+  "decision_type": "candidate_evaluation",
+  "decision_summary": "Escalation resolved: candidate approved after compliance review.",
+  "parent_evide_id": "aed9e966-6f25-4358-b784-b06eff939e91",
+  "chain_type": "escalation_resolution",
+  "matter_reference": "MATTER-2026-4471"
+}
+```
+
+The natural use is to pass the `evide_id` returned by an earlier `evide_escalate` as `parent_evide_id` on the deposit that resolves it — producing a declared lineage from "the agent stopped here" to "this is how it was closed".
+
+Chain validation is strict and has no silent fallback. If the parent does not exist, belongs to another evidentiary domain, is in a non-chainable status, or declares a different `matter_reference`, the whole deposit is refused rather than silently starting a new chain. The refusals are `chain_parent_not_found` (422), `chain_parent_not_owned` (**403** — an authorization decision, not a payload error), `chain_parent_invalid_status` (422) and `chain_matter_mismatch` (422).
+
+Returns: `evide_id`, `intake_hash`, `intake_timestamp_utc`, `profile_version`, Forensic Cross-Check state, DWC and FAC states when present, and — when the record continues from another — `chain_position`, `chain_type` and `chain_root_evide_id`.
 
 ---
 
@@ -147,6 +191,8 @@ Crystallize the agent state **before proceeding** at a high-stakes or contestabl
 }
 ```
 
+`evide_escalate` accepts the same optional chain and `evidence_references` parameters as `evide_intake`, for the case where one escalation continues from another.
+
 Available triggers: `high_stakes_decision` · `contestable_state` · `legal_ambiguity` · `regulatory_threshold` · `governance_uncertainty` · `semantic_instability` · `human_review_required` · `authority_incoherence`
 
 ---
@@ -158,6 +204,14 @@ Returns the configured owner and agent identity. Does not expose the full API ke
 
 ### `evide_check`
 Returns verification guidance for a previously deposited record.
+
+---
+
+## Scope of the Current Abstractions
+
+Current MCP abstractions intentionally expose only the intervention types required by the implemented tools (`approval` for `evide_intake`, `escalation` for `evide_escalate`). Additional intervention semantics — for example `override` or `rejection` — will be introduced only when a concrete agent workflow requires them, rather than speculating about future use cases.
+
+The same reasoning applies to `human_oversight.is_declared`, which is always `true`. This is not a shortcut: the server cannot start without a DAPI number, so every deposit made through it is by construction attributable to a declared accountable human. There is no anonymous path to leave open. The oversight *level* remains the caller's choice (`L1` / `L2` / `L3`); only the existence of a declared authority is fixed, because the transport itself guarantees it.
 
 ---
 
