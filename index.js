@@ -698,7 +698,7 @@ function formatEvideResponse(result, label = 'EVIDE deposit') {
 // =============================================================================
 
 const server = new Server(
-    { name: 'evide-mcp', version: '1.1.0' },
+    { name: 'evide-mcp', version: '1.2.0' },
     { capabilities: { tools: {} } }
 );
 
@@ -1255,7 +1255,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{
                 type: 'text',
                 text: [
-                    `EVIDE MCP v1.1.0 - Identity Configuration`,
+                    `EVIDE MCP v1.2.0 - Identity Configuration`,
                     ``,
                     `ACCOUNTABLE IDENTITY (owner - DAPI-bound):`,
                     `  Owner ID:    ${CONFIG.ownerId}`,
@@ -1315,7 +1315,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 process.stderr.write(
-    `[EVIDE MCP v1.1.0] Server started.\n` +
+    `[EVIDE MCP v1.2.0] Server started.\n` +
     `  Owner: ${CONFIG.ownerId} | Agent: ${CONFIG.agentId} / ${CONFIG.agentSystem}\n` +
     `  Credentials: present. Key validity verified at first deposit.\n`
 );
