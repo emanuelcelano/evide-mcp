@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EVIDE MCP Server v1.1.0
+ * EVIDE MCP Server v1.2.0
  * Connects any agentic AI system to the EVIDE Evidentiary Deposit API.
  *
  * IDENTITY REQUIREMENT:
@@ -8,16 +8,31 @@
  * that owns and is responsible for the AI agent.
  * The agent cannot self-certify. The owner must pre-configure credentials.
  *
- * ARCHITECTURAL SEPARATION (v1.1.0):
+ * ARCHITECTURAL SEPARATION (since v1.1.0):
  *   authority          = accountable human / organization identity (DAPI-bound)
  *   execution_identity = the agent or automated system that produced the closure
  *   escalation_context = why the agent is requesting evidentiary crystallization
  *
  * Tools:
- *   evide_intake    - deposit a finalized AI decision as an evidentiary record
- *   evide_escalate  - crystallize a high-stakes / contestable agent state before proceeding
- *   evide_owner_info - return configured owner identity (no key exposure)
- *   evide_check     - verification guidance for a deposited record
+ *   evide_intake         - deposit a finalized AI decision as an evidentiary record
+ *   evide_intake_esb     - deposit AND open an Epistemic Stabilization Buffer over it
+ *   evide_buffer_observe - record an intermediate observation on an open buffer
+ *   evide_buffer_close   - close the buffer with a verdict over a real time window
+ *   evide_escalate       - crystallize a high-stakes / contestable agent state before proceeding
+ *   evide_owner_info     - return configured owner identity (no key exposure)
+ *   evide_check          - verification guidance for a deposited record
+ *
+ * CHANGES IN v1.2.0:
+ *   - evide_schema corrected from 2.0 to 2.1. Every deposit was previously
+ *     rejected with unsupported_schema against production.
+ *   - Evidentiary Continuity: parent_evide_id / chain_type / matter_reference
+ *   - External artifacts: evidence_references, with the extensions registry
+ *     kept aligned by the client
+ *   - Epistemic Stabilization Buffer: three new tools for the full lifecycle
+ *   - The client no longer completes declarations that belong to someone else:
+ *     readiness_gate is never fabricated, unresolved_signals are never invented,
+ *     hashed_by and stabilization_score are never filled in on the caller's behalf.
+ *     evide_escalate now defaults to boundary_status 'candidate'.
  *
  * Usage:
  *   EVIDE_API_KEY=evd_xxx EVIDE_DAPI_NUMBER=0123456789 node index.js
