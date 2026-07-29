@@ -211,8 +211,48 @@ function buildChain(parentEvideId = null, chainType = null, matterReference = nu
     return chain;
 }
 
-function buildBoundaryReadiness(status, unresolvedSignals = []) {
+/**
+ * Costruisce handoff.boundary_readiness.
+ *
+ * PRINCIPIO: il gate non viene mai fabbricato dal client.
+ *
+ * boundary_readiness dichiara se un gate INDIPENDENTE ha valutato il confine.
+ * Un agente che deposita non e' quel gate: non puo' attestare la propria
+ * prontezza al confine piu' di quanto un sistema possa autocertificarsi.
+ * La pagina intake-schema lo dice esplicitamente: "A system cannot self-certify
+ * boundary_readiness.status = verified. That evaluation must come from an
+ * independent gate declared in readiness_gate.identifier."
+ *
+ * Di conseguenza:
+ *   candidate      -> nessun gate richiesto. L'upstream dichiara prontezza, ma
+ *                     nessuna valutazione indipendente e' avvenuta. E' lo stato
+ *                     normale e onesto di un deposito da agente.
+ *   altri stati    -> readiness_gate obbligatorio E dichiarato dal chiamante.
+ *                     Il client non lo inventa e non lo completa a meta'.
+ *
+ * Il server ancora la dichiarazione, non la giudica: non puo' dimostrare che il
+ * gate sia davvero indipendente dal solo nome. Proprio per questo il client non
+ * deve fabbricarlo - l'unica cosa garantibile e' che qualcuno l'abbia dichiarato.
+ *
+ * unresolved_signals appartiene al GATE, non all'agente: sono gli identificatori
+ * che il gate non e' riuscito a risolvere durante la sua valutazione. Con
+ * candidate l'array e' vuoto per definizione, non per restrizione, perche' non
+ * c'e' stata alcuna valutazione che potesse lasciare qualcosa in sospeso.
+ * Quello che l'agente non e' riuscito a decidere e' un'altra cosa, e oggi si
+ * racconta in escalation_reason / agent_state_summary.
+ */
+function buildBoundaryReadiness(status, unresolvedSignals = [], gate = {}) {
     if (status === 'candidate') {
+        if (unresolvedSignals.length > 0) {
+            throw new Error(
+                `unresolved_signals cannot be declared with boundary_status 'candidate': ` +
+                `the field carries the identifiers an independent GATE could not resolve, ` +
+                `and with 'candidate' no gate assessment took place. To declare what the ` +
+                `AGENT could not resolve, use escalation_reason or agent_state_summary. ` +
+                `To declare a gate's partial assessment, set boundary_status to ` +
+                `'verified_partial' or 'unverifiable' and supply readiness_gate_id and ` +
+                `readiness_gate_scope.`);
+        }
         return {
             status:             'candidate',
             readiness_gate:     null,
@@ -226,15 +266,35 @@ function buildBoundaryReadiness(status, unresolvedSignals = []) {
         verified_partial: 'partial',
         unverifiable:     'insufficient',
     };
+    if (!visibilityMap[status]) {
+        throw new Error(
+            `boundary_status must be one of: candidate, verified, verified_partial, unverifiable.`);
+    }
 
-    // For non-candidate: auto-build gate from agent system config
+    // Il gate deve arrivare dal chiamante. Nessun valore di ripiego.
+    const missing = [];
+    if (!gate.identifier)      missing.push('readiness_gate_id');
+    if (!gate.scope_reference) missing.push('readiness_gate_scope');
+    if (missing.length) {
+        throw new Error(
+            `boundary_status '${status}' requires an independently declared readiness gate. ` +
+            `Missing: ${missing.join(', ')}. Only 'candidate' may be declared without a gate. ` +
+            `The client never fabricates one: an agent cannot certify the boundary it is itself crossing.`);
+    }
+
+    if (status !== 'verified' && unresolvedSignals.length === 0) {
+        throw new Error(
+            `boundary_status '${status}' requires at least one entry in unresolved_signals: ` +
+            `a partial or unverifiable assessment must name what the gate could not resolve.`);
+    }
+
     return {
         status,
         readiness_gate: {
-            identifier:      `${CONFIG.agentSystem}_boundary_gate`,
-            scope_reference: `evide:mcp:intake:${CONFIG.agentSystem}`,
+            identifier:      String(gate.identifier),
+            scope_reference: String(gate.scope_reference),
         },
-        visibility_surface: visibilityMap[status] || 'partial',
+        visibility_surface: visibilityMap[status],
         unresolved_signals: status === 'verified' ? [] : unresolvedSignals,
     };
 }
@@ -259,6 +319,8 @@ function buildIntakePayload({
     chainType             = null,
     matterReference       = null,
     evidenceReferences    = [],
+    readinessGateId       = null,
+    readinessGateScope    = null,
 }) {
     const now     = new Date().toISOString();
     const closure = closureTimestamp || now;
@@ -296,7 +358,10 @@ function buildIntakePayload({
         chain: buildChain(parentEvideId, chainType, matterReference),
         fedis_requested: fedisRequested,
         handoff: {
-            boundary_readiness: buildBoundaryReadiness(boundaryStatus, unresolvedSignals),
+            boundary_readiness: buildBoundaryReadiness(boundaryStatus, unresolvedSignals, {
+                identifier:      readinessGateId,
+                scope_reference: readinessGateScope,
+            }),
             reconstruction_independence: 'declared',
             submission_status:  'not_submitted',
             acceptance_status:  'not_claimed',
@@ -329,11 +394,12 @@ function buildEscalatePayload({
     escalationTrigger,
     escalationReason,
     unresolvedSignals     = [],
-    boundaryStatus        = 'verified_partial',
+    boundaryStatus        = 'candidate',
     thresholdStatus       = 'unknown',
     classificationStatus  = 'provisional',
     traceReference        = null,
     readinessGateId       = null,
+    readinessGateScope    = null,
     parentEvideId         = null,
     chainType             = null,
     matterReference       = null,
@@ -341,20 +407,16 @@ function buildEscalatePayload({
 }) {
     const now = new Date().toISOString();
 
-    // escalation always requires at least one unresolved signal
-    const signals = unresolvedSignals.length > 0
-        ? unresolvedSignals
-        : ['agent_uncertainty_at_governance_boundary'];
-
-    // readiness_gate: the agent itself is the gate for escalation
-    const readinessGate = (boundaryStatus !== 'candidate') ? {
-        identifier:      readinessGateId || `${CONFIG.agentSystem}_escalation_gate`,
-        scope_reference: `evide:mcp:escalation:${CONFIG.agentSystem}`,
-    } : null;
-
-    const visibilitySurface = boundaryStatus === 'verified_partial' ? 'partial'
-        : boundaryStatus === 'unverifiable'   ? 'insufficient'
-        : null;
+    // Nessun segnale inventato e nessun gate fabbricato: un'escalation da agente
+    // e' per sua natura 'candidate' - l'agente si e' fermato, nessun gate
+    // indipendente ha ancora valutato quel confine. Cio' che l'agente non e'
+    // riuscito a chiudere sta in escalation_reason e agent_state_summary; i
+    // segnali irrisolti appartengono alla valutazione di un gate, e con
+    // 'candidate' quella valutazione non c'e' stata.
+    const readiness = buildBoundaryReadiness(boundaryStatus, unresolvedSignals, {
+        identifier:      readinessGateId,
+        scope_reference: readinessGateScope,
+    });
 
     const payload = {
         evide_schema:         '2.1',
@@ -394,12 +456,7 @@ function buildEscalatePayload({
         chain: buildChain(parentEvideId, chainType, matterReference),
         fedis_requested: false,
         handoff: {
-            boundary_readiness: {
-                status:             boundaryStatus,
-                readiness_gate:     readinessGate,
-                visibility_surface: visibilitySurface,
-                unresolved_signals: signals,
-            },
+            boundary_readiness: readiness,
             reconstruction_independence: 'declared',
             submission_status:  'not_submitted',
             acceptance_status:  'not_claimed',
@@ -579,6 +636,14 @@ For high-stakes or contestable states, use evide_escalate instead.`,
                             },
                         },
                     },
+                    readiness_gate_id: {
+                        type: 'string',
+                        description: 'Identifier of the INDEPENDENT gate that assessed the boundary. Required whenever boundary_status is not "candidate". The client never fabricates this: an agent cannot certify the boundary it is itself crossing. EVIDE anchors the declaration, it does not verify that the gate is genuinely independent - which is precisely why the value must come from you.',
+                    },
+                    readiness_gate_scope: {
+                        type: 'string',
+                        description: 'URL or hash of the gate policy document. Required whenever boundary_status is not "candidate". This is what makes a "verified" claim non-self-referential.',
+                    },
                     parent_evide_id: {
                         type: 'string',
                         description: 'Optional: EVIDE ID of a previously deposited record that this one continues from, forming a declared lineage of responsibility closures. Typical use: the evide_id returned by an earlier evide_escalate, when depositing the decision that resolved it. Validation is strict - if the parent does not exist, belongs to another evidentiary domain, is in a non-chainable status, or declares a different matter_reference, the whole deposit is refused rather than silently starting a new chain.',
@@ -608,7 +673,7 @@ Unlike evide_intake (which deposits a finalized decision), evide_escalate is cal
 The deposit includes:
 - execution_identity: the agent that triggered the escalation
 - escalation_context: why crystallization was requested
-- boundary_readiness: verified_partial or unverifiable (never candidate for escalation)
+- boundary_readiness: candidate by default. An agent stopping at a boundary has had no independent gate assess it, so the honest declaration is that none took place. FCC, DWC and FAC will read unknown: that is an evidentiary result, not a processing failure. Supply readiness_gate_id and readiness_gate_scope only if a genuinely independent gate assessed the boundary.
 
 Use cases:
 - Financial agent hitting a transaction requiring regulatory review
@@ -683,6 +748,14 @@ Returns evide_id and intake_hash as independent proof that the agent recognized 
                                 hashed_by:      { type: 'string', description: 'Who computed the digest. Required if any hash field is given: EVIDE anchors the hash exactly as declared and never verifies it, so its provenance must be stated. It is never inferred from the agent identity.' },
                             },
                         },
+                    },
+                    readiness_gate_id: {
+                        type: 'string',
+                        description: 'Identifier of the INDEPENDENT gate that assessed the boundary. Required whenever boundary_status is not "candidate". The client never fabricates this: an agent cannot certify the boundary it is itself crossing. EVIDE anchors the declaration, it does not verify that the gate is genuinely independent - which is precisely why the value must come from you.',
+                    },
+                    readiness_gate_scope: {
+                        type: 'string',
+                        description: 'URL or hash of the gate policy document. Required whenever boundary_status is not "candidate". This is what makes a "verified" claim non-self-referential.',
                     },
                     parent_evide_id: {
                         type: 'string',
@@ -764,6 +837,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 chainType:            args.chain_type              || null,
                 matterReference:      args.matter_reference        || null,
                 evidenceReferences:   args.evidence_references     || [],
+                readinessGateId:      args.readiness_gate_id       || null,
+                readinessGateScope:   args.readiness_gate_scope    || null,
             });
 
             const result = await evidePost(payload);
@@ -798,6 +873,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 chainType:           args.chain_type          || null,
                 matterReference:     args.matter_reference    || null,
                 evidenceReferences:  args.evidence_references || [],
+                readinessGateId:     args.readiness_gate_id   || null,
+                readinessGateScope:  args.readiness_gate_scope|| null,
             });
 
             const result = await evidePost(payload);
