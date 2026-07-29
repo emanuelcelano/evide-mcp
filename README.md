@@ -2,13 +2,24 @@
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-blue)
 ![MCP Compatible](https://img.shields.io/badge/MCP-compatible-success)
 
-# EVIDE MCP Server v1.1.0
+# EVIDE MCP Server v1.2.0
 
 MCP server connecting AI agents to the [EVIDE External Evidentiary Deposit](https://app.certifywebcontent.com) API.
 
 EVIDE crystallizes AI agent decisions, escalations, and governance states into independently verifiable forensic records -- anchored to a verified human identity, timestamped server-side in UTC, and externalized before consequence propagation begins.
 
 > EVIDE is not an execution-control layer. It is an external evidentiary crystallization layer operating at the responsibility closure boundary.
+
+---
+
+## What's New in v1.2.0
+
+- **EVIDE Schema 2.1.** Previous versions declared `evide_schema: 2.0` and were rejected by production with `unsupported_schema` on every deposit. If you cloned before July 2026, your copy could not deposit at all.
+- **Evidentiary Continuity.** `parent_evide_id`, `chain_type` and `matter_reference` on both deposit tools, with the four refusal codes documented.
+- **External Artifacts.** `evidence_references` with structured hash declaration; the `extensions` registry is kept aligned by the client.
+- **Epistemic Stabilization Buffer.** Three new tools: `evide_intake_esb`, `evide_buffer_observe`, `evide_buffer_close`.
+- **Boundary Readiness aligned with independent gate declaration.** `candidate` is now the default for both tools, and the client no longer fabricates a `readiness_gate`.
+- **The client no longer completes declarations that belong to someone else.** `hashed_by`, `readiness_gate`, `unresolved_signals` and `stabilization_score` are never filled in on the caller's behalf: a missing one fails the call rather than being invented.
 
 ---
 
@@ -293,6 +304,19 @@ FCC:                 DEGRADED
 The record preserved a degraded governance state without flattening instability into false certainty.
 
 [LinkedIn -- First Live Agent Evidentiary Crystallization](https://www.linkedin.com/feed/update/urn:li:activity:7463539504990212096/)
+
+### End-to-end validation, July 2026
+
+v1.2.0 was exercised through a real MCP client along the complete path -- client, JSON-RPC over stdio, payload builders, HTTP transport, EVIDE Intake API -- rather than by re-running the builders in isolation.
+
+| exercised | result |
+|---|---|
+| `evide_intake` with an incomplete hash declaration | refused **in the client**, before any network call |
+| `evide_intake` with `verified_partial` and no declared gate | refused in the client |
+| `evide_intake` with a structured hash and `boundary_status: candidate` | deposited; FCC, DWC and FAC all `unknown`, as expected with no independent gate |
+| `evide_intake_esb` -> two `evide_buffer_observe` -> `evide_buffer_close` | full lifecycle over a real **502-second** window, with a declared `stabilization_score` |
+
+**Not yet exercised along that path:** `evide_escalate`, `evide_owner_info`, `evide_check`, and the chain parameters. A defect in the `evide_escalate` handler was found by code review immediately afterwards -- precisely because it was not part of the run. The distinction between what has been executed and what has only been read is kept here for the same reason it is kept in the evidentiary records themselves.
 
 ---
 
