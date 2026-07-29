@@ -207,6 +207,29 @@ Returns verification guidance for a previously deposited record.
 
 ---
 
+## Boundary Readiness and the Independent Gate
+
+Agent-originated intakes default to `boundary_readiness: candidate`. In the absence of an independently declared readiness gate, FCC, DWC and FAC may remain `unknown`. **This is an evidentiary result, not a processing failure.**
+
+`boundary_readiness` declares whether an *independent* gate assessed the boundary. A depositing agent is not that gate: it cannot attest to its own readiness at a boundary any more than a system can self-certify. The client therefore never fabricates one — `readiness_gate_id` and `readiness_gate_scope` must come from the caller, and any status other than `candidate` is refused without them.
+
+The same applies to `unresolved_signals`, which carries the identifiers **a gate** could not resolve during its assessment. With `candidate` the array is empty by definition, not by restriction: no assessment took place, so nothing could have been left open. What the *agent* could not decide is a different thing, and lives in `escalation_reason` and `agent_state_summary`.
+
+This is the intended lifecycle, and it is already how independent integrations use the schema in production:
+
+```
+agent
+  ↓  evide_escalate / evide_intake  →  boundary_readiness: candidate
+  ↓                                    FCC / DWC / FAC: unknown
+independent gate (human supervisor, orchestrator, external governance component)
+  ↓  assessment                      →  boundary_readiness: verified_partial
+                                       with its own readiness_gate
+```
+
+The agent never has to impersonate the gate. Same principle already applied to `hashed_by`: the client does not invent a declaration that belongs to someone else.
+
+---
+
 ## Scope of the Current Abstractions
 
 Current MCP abstractions intentionally expose only the intervention types required by the implemented tools (`approval` for `evide_intake`, `escalation` for `evide_escalate`). Additional intervention semantics — for example `override` or `rejection` — will be introduced only when a concrete agent workflow requires them, rather than speculating about future use cases.
