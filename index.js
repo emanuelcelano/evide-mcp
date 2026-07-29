@@ -62,6 +62,17 @@ const CONFIG = {
     apiEndpoint: process.env.EVIDE_API_ENDPOINT || 'https://app.certifywebcontent.com/api/intake/json',
 };
 
+// Gli endpoint ESB derivano dalla stessa base di apiEndpoint, cosi' chi ha gia'
+// configurato EVIDE_API_ENDPOINT verso un ambiente diverso non deve toccare altro.
+CONFIG.esbEndpoints = (() => {
+    const base = CONFIG.apiEndpoint.replace(/\/api\/intake\/json\/?$/, '');
+    return {
+        intake: `${base}/api/intake/esb`,
+        update: `${base}/api/buffer/update`,
+        close:  `${base}/api/buffer/close`,
+    };
+})();
+
 if (!CONFIG.apiKey || !CONFIG.dapiNumber || !CONFIG.ownerId) {
     process.stderr.write(
         '[EVIDE MCP] ERROR: Missing required environment variables.\n' +
@@ -79,8 +90,8 @@ if (!CONFIG.apiKey || !CONFIG.dapiNumber || !CONFIG.ownerId) {
 // EVIDE API CLIENT
 // =============================================================================
 
-async function evidePost(payload) {
-    const response = await fetch(CONFIG.apiEndpoint, {
+async function evidePost(payload, endpoint = CONFIG.apiEndpoint) {
+    const response = await fetch(endpoint, {
         method:  'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -89,6 +100,139 @@ async function evidePost(payload) {
         body: JSON.stringify(payload),
     });
     return response.json();
+}
+
+// =============================================================================
+// ESB - EPISTEMIC STABILIZATION BUFFER
+// =============================================================================
+
+/**
+ * Il buffer non e' un payload: e' un ciclo di vita.
+ *
+ *   apri (intake ESB)  ->  osserva (una o piu' volte)  ->  chiudi con un verdetto
+ *
+ * Tra apertura e chiusura deve passare una finestra temporale REALE: il server
+ * rifiuta una chiusura avvenuta meno di due secondi dopo l'apertura, perche' un
+ * buffer che si chiude istantaneamente non ha osservato nulla. La finestra
+ * misurata torna nella risposta come window_seconds.
+ *
+ * NIENTE VIENE INVENTATO DAL CLIENT. In particolare stabilization_score e' un
+ * valore DICHIARATO da chi osserva, non calcolato dal server ne' dal client: se
+ * l'agente non lo fornisce, non viene inviato. Vale lo stesso principio gia'
+ * applicato a hashed_by e a readiness_gate - il client non completa una
+ * dichiarazione che appartiene a un altro soggetto.
+ *
+ * Attenzione ai campi di fase: buffer/update e buffer/close accettano insiemi
+ * di chiavi diversi, e mandare un campo alla fase sbagliata produce un 422
+ * wrong_phase_field invece di essere scartato in silenzio.
+ */
+const BUFFER_ENUMS = {
+    stability_trend:           ['improving', 'degrading', 'oscillating', 'static'],
+    continuity_state:          ['coherent', 'partially_coherent', 'fragmented', 'unverifiable'],
+    causal_persistence_signal: ['present', 'attenuated', 'absent', 'inconclusive'],
+    stabilization_source:      ['human_review', 'automated_decay', 'quorum_resolution',
+                                'timeout_expiration', 'external_override', 'mixed'],
+    buffer_verdict:            ['stable', 'unstable', 'deferred'],
+    closure_trigger:           ['manual_close', 'auto_threshold', 'timeout',
+                                'downstream_dependency', 'escalation', 'evidentiary_freeze'],
+    instability_reason:        ['authority_conflict', 'evidence_gap', 'runtime_drift',
+                                'observability_loss', 'contradictory_signals',
+                                'threshold_fragmentation', 'unresolved_intervention', 'unknown'],
+};
+
+function checkEnum(field, value) {
+    if (value === undefined || value === null) return;
+    if (!BUFFER_ENUMS[field].includes(value)) {
+        throw new Error(`${field} must be one of: ${BUFFER_ENUMS[field].join(', ')}`);
+    }
+}
+
+function buildBufferObservation(args) {
+    if (!args.buffer_id) throw new Error('buffer_id is required.');
+
+    // Campi che appartengono alla CHIUSURA: intercettati qui con un messaggio
+    // che indirizza, invece di lasciare che il server risponda wrong_phase_field.
+    const closeOnly = ['buffer_verdict', 'closure_trigger', 'stabilization_score',
+                       'instability_reason', 'unresolved_at_close', 'test_mode'];
+    const misplaced = closeOnly.filter((f) => args[f] !== undefined);
+    if (misplaced.length) {
+        throw new Error(
+            `${misplaced.join(', ')} belong to evide_buffer_close, not evide_buffer_observe. ` +
+            `An observation records what is happening while the buffer is open; a verdict and ` +
+            `its score belong to the moment it closes.`);
+    }
+
+    for (const f of ['stability_trend', 'continuity_state',
+                     'causal_persistence_signal', 'stabilization_source']) {
+        checkEnum(f, args[f]);
+    }
+
+    const payload = { buffer_id: args.buffer_id };
+    for (const f of ['stability_trend', 'continuity_state', 'causal_persistence_signal',
+                     'stabilization_source', 'buffer_notes']) {
+        if (args[f] !== undefined && args[f] !== null) payload[f] = args[f];
+    }
+    if (Number.isInteger(args.signal_count_total)) payload.signal_count_total = args.signal_count_total;
+
+    if (Object.keys(payload).length === 1) {
+        throw new Error(
+            'An observation must carry at least one observed field. Sending only buffer_id ' +
+            'would be a no-op and the server refuses it (no_observation_fields).');
+    }
+    return payload;
+}
+
+function buildBufferClose(args) {
+    if (!args.buffer_id) throw new Error('buffer_id is required.');
+    checkEnum('buffer_verdict', args.buffer_verdict);
+    checkEnum('closure_trigger', args.closure_trigger);
+    checkEnum('instability_reason', args.instability_reason);
+    if (!args.buffer_verdict) {
+        throw new Error(`buffer_verdict is required and must be one of: ${BUFFER_ENUMS.buffer_verdict.join(', ')}`);
+    }
+
+    // Campi che appartengono all'OSSERVAZIONE.
+    const updateOnly = ['stability_trend', 'continuity_state', 'stabilization_source'];
+    const misplaced = updateOnly.filter((f) => args[f] !== undefined);
+    if (misplaced.length) {
+        throw new Error(
+            `${misplaced.join(', ')} belong to evide_buffer_observe, not evide_buffer_close. ` +
+            `Record them while the buffer is open.`);
+    }
+
+    // Regole condizionali del server, verificate qui per dare un messaggio utile.
+    if (args.buffer_verdict === 'unstable' && !args.instability_reason) {
+        throw new Error(
+            `buffer_verdict 'unstable' requires instability_reason. Allowed: ` +
+            BUFFER_ENUMS.instability_reason.join(', '));
+    }
+    if ((args.buffer_verdict === 'deferred' || args.instability_reason) && !args.buffer_notes) {
+        throw new Error(
+            `buffer_notes is required when the verdict is 'deferred' or when an instability_reason is set: ` +
+            `a non-stable closure must say in words what was left open.`);
+    }
+    if (args.stabilization_score !== undefined && args.stabilization_score !== null) {
+        const n = Number(args.stabilization_score);
+        if (!Number.isFinite(n) || n < 0 || n > 100) {
+            throw new Error(
+                'stabilization_score must be a number between 0 and 100. Out-of-range values are ' +
+                'rejected, never clamped: clamping would hide a client error.');
+        }
+    }
+
+    const payload = { buffer_id: args.buffer_id, buffer_verdict: args.buffer_verdict };
+    for (const f of ['closure_trigger', 'instability_reason', 'buffer_notes',
+                     'causal_persistence_signal']) {
+        if (args[f] !== undefined && args[f] !== null) payload[f] = args[f];
+    }
+    // Mai inventato: se l'agente non lo dichiara, non viene inviato.
+    if (args.stabilization_score !== undefined && args.stabilization_score !== null) {
+        payload.stabilization_score = Number(args.stabilization_score);
+    }
+    if (Number.isInteger(args.unresolved_at_close)) payload.unresolved_at_close = args.unresolved_at_close;
+    if (Number.isInteger(args.signal_count_total))  payload.signal_count_total  = args.signal_count_total;
+    if (args.test_mode === true) payload.test_mode = true;
+    return payload;
 }
 
 // =============================================================================
@@ -791,6 +935,95 @@ Returns evide_id and intake_hash as independent proof that the agent recognized 
         // evide_check - verification guidance
         // ----------------------------------------------------------------
         {
+            name: 'evide_intake_esb',
+            description: `Deposit a finalized decision AND open an Epistemic Stabilization Buffer over it.
+
+Same payload as evide_intake, sent to the ESB profile. The closure is anchored immediately, exactly as with a normal intake - the buffer opens ALONGSIDE it, it does not delay or replace it.
+
+Use this when the decision is closed but its stabilization is worth observing over a real time window: the buffer records how the conditions settled, not only what they were at the crossing.
+
+Returns evide_id, intake_hash, the evidentiary profile, and a buffer_id. Keep the buffer_id: you need it to observe and to close. A buffer left open records an observation that never concluded.`,
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    source_reference: { type: 'string', description: 'Your internal reference for this decision.' },
+                    decision_type:    { type: 'string', description: 'Category of decision, e.g. candidate_evaluation, claim_assessment.' },
+                    decision_summary: { type: 'string', description: 'What was decided, in plain language.' },
+                    classification_status: { type: 'string', enum: ['stable', 'provisional', 'contested'] },
+                    threshold_status:      { type: 'string', enum: ['met', 'not_met', 'unknown', 'not_defined'] },
+                    boundary_status:       { type: 'string', enum: ['candidate', 'verified', 'verified_partial', 'unverifiable'], description: 'Defaults to candidate. Anything else requires readiness_gate_id and readiness_gate_scope.' },
+                    human_oversight_level: { type: 'string', enum: ['L1', 'L2', 'L3'] },
+                    unresolved_signals:    { type: 'array', items: { type: 'string' }, description: 'Identifiers the GATE could not resolve. Only with a non-candidate boundary_status.' },
+                    readiness_gate_id:     { type: 'string', description: 'Identifier of the independent gate. Never fabricated by the client.' },
+                    readiness_gate_scope:  { type: 'string', description: 'URL or hash of the gate policy document.' },
+                    rationale:             { type: 'string' },
+                    trace_reference:       { type: 'string' },
+                    parent_evide_id:       { type: 'string', description: 'Optional: record this one continues from.' },
+                    chain_type:            { type: 'string' },
+                    matter_reference:      { type: 'string' },
+                },
+                required: ['source_reference', 'decision_type', 'decision_summary'],
+            },
+        },
+        {
+            name: 'evide_buffer_observe',
+            description: `Record an intermediate observation on an open Epistemic Stabilization Buffer.
+
+Call this one or more times while the buffer is open, to record how the stabilization is evolving: whether it is settling or drifting, whether the causal link is holding, how many signals are in play.
+
+Every observation is persisted as an event in its own right, not merely counted. Nothing is invented: send only what you actually observed.
+
+Fields belonging to the closing phase - buffer_verdict, stabilization_score, closure_trigger - are refused here rather than silently discarded.`,
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    buffer_id: { type: 'number', description: 'The buffer_id returned by evide_intake_esb.' },
+                    stability_trend: { type: 'string', enum: ['improving', 'degrading', 'oscillating', 'static'],
+                        description: 'Direction of travel since the previous observation.' },
+                    continuity_state: { type: 'string', enum: ['coherent', 'partially_coherent', 'fragmented', 'unverifiable'],
+                        description: 'Whether the causal chain still holds together at this point in the window.' },
+                    causal_persistence_signal: { type: 'string', enum: ['present', 'attenuated', 'absent', 'inconclusive'],
+                        description: 'Whether the causal link between conditions and closure is still observable.' },
+                    stabilization_source: { type: 'string', enum: ['human_review', 'automated_decay', 'quorum_resolution', 'timeout_expiration', 'external_override', 'mixed'],
+                        description: 'What is driving the stabilization you are observing.' },
+                    signal_count_total: { type: 'number', description: 'Total signals in play at this observation.' },
+                    buffer_notes: { type: 'string', description: 'Free text: what you saw that the categorical fields cannot carry.' },
+                },
+                required: ['buffer_id'],
+            },
+        },
+        {
+            name: 'evide_buffer_close',
+            description: `Close an open Epistemic Stabilization Buffer with a verdict.
+
+The verdict states whether the closure stabilized sufficiently to cross the boundary - NOT whether it is true. The server returns the semantic note alongside it: "crossing-sufficient, NOT absolute epistemic truth".
+
+A real observation window is required: the server refuses a close occurring less than two seconds after the open, because a buffer that closes instantly observed nothing. The measured window is returned as window_seconds.
+
+stabilization_score is DECLARED by you, never computed by EVIDE or by this client. Out-of-range values are rejected, never clamped: clamping would hide the error. If you have no basis for a score, do not send one.`,
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    buffer_id:      { type: 'number', description: 'The buffer_id returned by evide_intake_esb.' },
+                    buffer_verdict: { type: 'string', enum: ['stable', 'unstable', 'deferred'],
+                        description: 'stable = sufficiently stabilized for crossing. unstable requires instability_reason. deferred requires buffer_notes.' },
+                    closure_trigger: { type: 'string', enum: ['manual_close', 'auto_threshold', 'timeout', 'downstream_dependency', 'escalation', 'evidentiary_freeze'],
+                        description: 'What caused the buffer to close. A close by timeout is forensically distinct from a close by convergence.' },
+                    stabilization_score: { type: 'number', description: 'Optional: 0 to 100, declared by you. Omit it if you have no basis for it - it is never inferred.' },
+                    instability_reason: { type: 'string', enum: ['authority_conflict', 'evidence_gap', 'runtime_drift', 'observability_loss', 'contradictory_signals', 'threshold_fragmentation', 'unresolved_intervention', 'unknown'],
+                        description: 'Required when buffer_verdict is unstable.' },
+                    buffer_notes: { type: 'string', description: 'Required when the verdict is deferred, or whenever an instability_reason is set.' },
+                    causal_persistence_signal: { type: 'string', enum: ['present', 'attenuated', 'absent', 'inconclusive'],
+                        description: 'Optional: overrides the last observed value at the moment of closing.' },
+                    unresolved_at_close: { type: 'number', description: 'How many signals were still unresolved when the buffer closed.' },
+                    signal_count_total: { type: 'number' },
+                    test_mode: { type: 'boolean',
+                        description: 'Bypasses the two-second minimum observation window. For testing only: a buffer closed in test_mode did not observe a real window, and the record will not say otherwise.' },
+                },
+                required: ['buffer_id', 'buffer_verdict'],
+            },
+        },
+        {
             name: 'evide_check',
             description: 'Returns verification guidance for a previously deposited EVIDE record. Provides instructions for verifying the intake_hash against the live registry.',
             inputSchema: {
@@ -899,6 +1132,103 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 content: [{ type: 'text', text: `EVIDE MCP error: ${err.message}` }],
                 isError: true,
             };
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // evide_intake_esb - deposito + apertura del buffer
+    // ----------------------------------------------------------------
+    if (name === 'evide_intake_esb') {
+        try {
+            const payload = buildIntakePayload({
+                sourceReference:      args.source_reference,
+                decisionType:         args.decision_type,
+                decisionSummary:      args.decision_summary,
+                classificationStatus: args.classification_status  || 'stable',
+                thresholdStatus:      args.threshold_status        || 'not_defined',
+                boundaryStatus:       args.boundary_status         || 'candidate',
+                unresolvedSignals:    args.unresolved_signals      || [],
+                humanOversightLevel:  args.human_oversight_level   || 'L2',
+                rationale:            args.rationale               || null,
+                traceReference:       args.trace_reference         || null,
+                parentEvideId:        args.parent_evide_id         || null,
+                chainType:            args.chain_type              || null,
+                matterReference:      args.matter_reference        || null,
+                evidenceReferences:   args.evidence_references     || [],
+                readinessGateId:      args.readiness_gate_id       || null,
+                readinessGateScope:   args.readiness_gate_scope    || null,
+            });
+
+            const result = await evidePost(payload, CONFIG.esbEndpoints.intake);
+            let text = formatEvideResponse(result, 'EVIDE ESB intake');
+
+            if (result.buffer && result.buffer.buffer_id) {
+                text += `\n\nEpistemic Stabilization Buffer:` +
+                        `\n  buffer_id:           ${result.buffer.buffer_id}` +
+                        `\n  esb_status:          ${result.esb_status || 'n/a'}` +
+                        `\n\nThe buffer is OPEN. Record observations with evide_buffer_observe,` +
+                        `\nthen close it with evide_buffer_close. At least two seconds must elapse` +
+                        `\nbetween opening and closing: a buffer that closes instantly observed nothing.`;
+            }
+
+            return { content: [{ type: 'text', text }], isError: !result.success };
+        } catch (err) {
+            return { content: [{ type: 'text', text: `EVIDE MCP error: ${err.message}` }], isError: true };
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // evide_buffer_observe - osservazione intermedia
+    // ----------------------------------------------------------------
+    if (name === 'evide_buffer_observe') {
+        try {
+            const payload = buildBufferObservation(args);
+            const result  = await evidePost(payload, CONFIG.esbEndpoints.update);
+
+            const text = result.success
+                ? [`Buffer observation recorded.`,
+                   ``,
+                   `buffer_id:       ${result.buffer_id}`,
+                   `updated_fields:  ${result.updated_fields}`,
+                   ``,
+                   `The count reflects what was written. Fields belonging to the closing phase`,
+                   `are refused, not discarded, so this number matches what you sent.`].join('\n')
+                : `EVIDE buffer error: ${result.error || 'unknown'} - ${result.message || ''}`;
+
+            return { content: [{ type: 'text', text }], isError: !result.success };
+        } catch (err) {
+            return { content: [{ type: 'text', text: `EVIDE MCP error: ${err.message}` }], isError: true };
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // evide_buffer_close - chiusura con verdetto
+    // ----------------------------------------------------------------
+    if (name === 'evide_buffer_close') {
+        try {
+            const payload = buildBufferClose(args);
+            const result  = await evidePost(payload, CONFIG.esbEndpoints.close);
+
+            const text = result.success
+                ? [`Buffer closed.`,
+                   ``,
+                   `buffer_id:         ${result.buffer_id}`,
+                   `buffer_verdict:    ${result.buffer_verdict}`,
+                   `buffer_open_at:    ${result.buffer_open_at}`,
+                   `buffer_close_at:   ${result.buffer_close_at}`,
+                   `window_seconds:    ${result.window_seconds}`,
+                   `closure_trigger:   ${result.closure_trigger || 'n/a'}`,
+                   result.stabilization_score !== undefined && result.stabilization_score !== null
+                       ? `stabilization_score: ${result.stabilization_score}  (declared, not computed)`
+                       : `stabilization_score: not declared`,
+                   `causal_persistence_signal: ${result.causal_persistence_signal || 'n/a'}`,
+                   ``,
+                   `${result.semantic_note || ''}`].join('\n')
+                : `EVIDE buffer error: ${result.error || 'unknown'} - ${result.message || ''}`;
+
+            return { content: [{ type: 'text', text }], isError: !result.success };
+        } catch (err) {
+            return { content: [{ type: 'text', text: `EVIDE MCP error: ${err.message}` }], isError: true };
         }
     }
 
