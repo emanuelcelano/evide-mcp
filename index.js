@@ -874,12 +874,12 @@ Returns evide_id and intake_hash as independent proof that the agent recognized 
                     unresolved_signals: {
                         type: 'array',
                         items: { type: 'string' },
-                        description: 'Specific signals the agent could not resolve at this boundary. Auto-populated if empty.',
+                        description: 'Identifiers a GATE could not resolve during its assessment. Only meaningful with a non-candidate boundary_status, and never invented by the client: with candidate the array is empty by definition, because no assessment took place. What the AGENT could not decide belongs in escalation_reason and agent_state_summary.',
                     },
                     boundary_status: {
                         type: 'string',
-                        enum: ['verified_partial', 'unverifiable'],
-                        description: 'Boundary readiness state. Default: verified_partial (agent assessed but found gaps).',
+                        enum: ['candidate', 'verified', 'verified_partial', 'unverifiable'],
+                        description: 'Boundary readiness state. Default: candidate - an agent stopping at a boundary has had no independent gate assess it, so the honest declaration is that none took place. Any other value requires readiness_gate_id and readiness_gate_scope declared by the caller: the client never fabricates a gate.',
                     },
                     trace_reference: {
                         type: 'string',
@@ -1115,7 +1115,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 escalationTrigger:   args.escalation_trigger,
                 escalationReason:    args.escalation_reason,
                 unresolvedSignals:   args.unresolved_signals  || [],
-                boundaryStatus:      args.boundary_status     || 'verified_partial',
+                boundaryStatus:      args.boundary_status     || 'candidate',
                 traceReference:      args.trace_reference     || null,
                 parentEvideId:       args.parent_evide_id     || null,
                 chainType:           args.chain_type          || null,
