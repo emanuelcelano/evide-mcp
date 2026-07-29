@@ -1,6 +1,6 @@
 {
   "name": "evide-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "MCP server for AI agents to deposit evidentiary records into EVIDE. Requires DAPI verified identity and active EVIDE subscription.",
   "type": "module",
   "main": "index.js",
