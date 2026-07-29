@@ -207,6 +207,35 @@ Returns verification guidance for a previously deposited record.
 
 ---
 
+## Epistemic Stabilization Buffer
+
+Three additional tools let an agent drive the full ESB lifecycle:
+
+| tool | what it does |
+|---|---|
+| `evide_intake_esb` | deposits the closure **and** opens a buffer over it. Returns `buffer_id`. |
+| `evide_buffer_observe` | records an intermediate observation while the buffer is open. Callable more than once. |
+| `evide_buffer_close` | closes the buffer with a verdict. |
+
+The closure is anchored immediately, exactly as with `evide_intake`: the buffer opens **alongside** it, it does not delay or replace it. What the buffer adds is the trajectory — how the conditions settled over a real window, rather than only what they were at the crossing.
+
+**A real observation window is required.** The server refuses a close occurring less than two seconds after the open, because a buffer that closes instantly observed nothing. The measured window comes back as `window_seconds`. `test_mode: true` bypasses this, and is exposed only because the server accepts it: a buffer closed in test mode did not observe a real window, and the record will not pretend otherwise.
+
+**`stabilization_score` is declared, never computed.** Neither EVIDE nor this client calculates it. Out-of-range values are rejected rather than clamped, because clamping would hide a client error. If you have no basis for a score, omit it — the client does not supply one on your behalf. Same principle already applied to `hashed_by` and `readiness_gate`.
+
+**Phase fields are enforced client-side.** `buffer/update` and `buffer/close` accept different key sets. Sending `stabilization_score` to an observation, or `stability_trend` to a close, is refused with a message naming the tool it belongs to — rather than being silently discarded, which is what the API itself did until July 2026.
+
+```
+evide_intake_esb        → closure anchored, buffer_id returned, buffer OPEN
+      ↓
+evide_buffer_observe    → stability_trend, continuity_state,
+      ↓                   causal_persistence_signal, stabilization_source
+evide_buffer_close      → verdict + window_seconds
+                          "crossing-sufficient, NOT absolute epistemic truth"
+```
+
+---
+
 ## Boundary Readiness and the Independent Gate
 
 Agent-originated intakes default to `boundary_readiness: candidate`. In the absence of an independently declared readiness gate, FCC, DWC and FAC may remain `unknown`. **This is an evidentiary result, not a processing failure.**
