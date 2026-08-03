@@ -359,6 +359,62 @@ function buildEvidenceReferences(refs = []) {
     });
 }
 
+/**
+ * Costruisce e valida il blocco declarations (EVIDE ANCHOR).
+ *
+ * EVIDE preserva la DICHIARAZIONE del perimetro operativo entro cui l'agente
+ * e' stato autorizzato ad operare (ambiente, privilegi, scopo, strumenti,
+ * operazioni vietate, configurazione) - non la verifica, non la applica come
+ * policy, non la confronta con il comportamento osservato.
+ *
+ * Versione MCP volutamente semplificata rispetto allo schema API completo:
+ * espone solo i campi principali di ogni Declaration (declaration_type,
+ * declared_value, declarant, declared_at, declared_description,
+ * declared_attribution_status - quest'ultimo appiattito da
+ * authority_source.declared_attribution_status). subject_references,
+ * authority_source.references e declared_relations non sono esposti qui:
+ * richiederebbero uno schema nidificato a piu' livelli per un caso d'uso che
+ * un agente MCP raramente compila da solo in un singolo tool call. Restano
+ * disponibili passando declarations per intero tramite l'API diretta
+ * (intake/json), che li supporta senza questa semplificazione.
+ */
+const ATTRIBUTION_STATUSES = ['attributed', 'fragmented', 'implicit', 'unknown'];
+
+function buildDeclarations(decls = []) {
+    if (!Array.isArray(decls) || decls.length === 0) return null;
+
+    return decls.map((d, i) => {
+        const missing = [];
+        if (!d.declaration_type) missing.push('declaration_type');
+        if (d.declared_value === undefined || d.declared_value === null || d.declared_value === '') missing.push('declared_value');
+        if (!d.declarant)        missing.push('declarant');
+        if (!d.declared_at)      missing.push('declared_at');
+        if (missing.length) {
+            throw new Error(
+                `declarations[${i}]: missing required field(s): ${missing.join(', ')}.`);
+        }
+
+        const out = {
+            declaration_type: String(d.declaration_type),
+            declared_value:   d.declared_value,
+            declarant:        String(d.declarant),
+            declared_at:      String(d.declared_at),
+        };
+        if (d.declared_description) out.declared_description = String(d.declared_description);
+
+        if (d.declared_attribution_status) {
+            if (!ATTRIBUTION_STATUSES.includes(d.declared_attribution_status)) {
+                throw new Error(
+                    `declarations[${i}].declared_attribution_status must be one of: ` +
+                    ATTRIBUTION_STATUSES.join(', '));
+            }
+            out.authority_source = { declared_attribution_status: d.declared_attribution_status };
+        }
+
+        return out;
+    });
+}
+
 function buildChain(parentEvideId = null, chainType = null, matterReference = null) {
     const chain = {
         parent_evide_id: parentEvideId || null,
@@ -478,6 +534,7 @@ function buildIntakePayload({
     chainType             = null,
     matterReference       = null,
     evidenceReferences    = [],
+    declarations          = [],
     readinessGateId       = null,
     readinessGateScope    = null,
 }) {
@@ -532,8 +589,14 @@ function buildIntakePayload({
     // tiene allineati per costruzione, cosi' l'agente non puo' sbagliarlo.
     const evRefs = buildEvidenceReferences(evidenceReferences);
     if (evRefs) {
-        payload.extensions          = ['evidence_references'];
+        payload.extensions          = (payload.extensions || []).concat('evidence_references');
         payload.evidence_references = evRefs;
+    }
+
+    const decls = buildDeclarations(declarations);
+    if (decls) {
+        payload.extensions   = (payload.extensions || []).concat('declarations');
+        payload.declarations = decls;
     }
 
     if (rationale)       payload.intervention.rationale = rationale;
@@ -563,6 +626,7 @@ function buildEscalatePayload({
     chainType             = null,
     matterReference       = null,
     evidenceReferences    = [],
+    declarations          = [],
 }) {
     const now = new Date().toISOString();
 
@@ -626,8 +690,14 @@ function buildEscalatePayload({
 
     const evRefs = buildEvidenceReferences(evidenceReferences);
     if (evRefs) {
-        payload.extensions          = ['evidence_references'];
+        payload.extensions          = (payload.extensions || []).concat('evidence_references');
         payload.evidence_references = evRefs;
+    }
+
+    const decls = buildDeclarations(declarations);
+    if (decls) {
+        payload.extensions   = (payload.extensions || []).concat('declarations');
+        payload.declarations = decls;
     }
 
     return payload;
@@ -795,6 +865,25 @@ For high-stakes or contestable states, use evide_escalate instead.`,
                             },
                         },
                     },
+                    declarations: {
+                        type: 'array',
+                        description: 'Optional: EVIDE ANCHOR declarations of the operational perimeter (environment, privileges, purpose, tools, prohibited operations, agent configuration) the agent was authorized within, before it acted. EVIDE preserves the declaration only - it does not verify its correctness, apply it as policy, or compare it with observed behavior. Declaring the array automatically sets the required extensions registry entry.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                declaration_type: { type: 'string', description: 'Free text, e.g. environment_classification, privilege_scope, declared_purpose, tool_availability, prohibited_operations, agent_configuration.' },
+                                declared_value:   { type: 'string', description: 'The content of the declaration, e.g. "production" for an environment_classification.' },
+                                declarant:        { type: 'string', description: 'Who made this specific declaration - not necessarily the same identity as the record\'s authority.' },
+                                declared_at:      { type: 'string', description: 'ISO 8601 timestamp of when this declaration was made.' },
+                                declared_description: { type: 'string', description: 'Optional free-text elaboration.' },
+                                declared_attribution_status: {
+                                    type: 'string',
+                                    enum: ['attributed', 'fragmented', 'implicit', 'unknown'],
+                                    description: 'Optional: whether the authority behind this specific declaration is clearly attributed. Same status vocabulary as threshold_authority elsewhere in this schema.',
+                                },
+                            },
+                        },
+                    },
                     readiness_gate_id: {
                         type: 'string',
                         description: 'Identifier of the INDEPENDENT gate that assessed the boundary. Required whenever boundary_status is not "candidate". The client never fabricates this: an agent cannot certify the boundary it is itself crossing. EVIDE anchors the declaration, it does not verify that the gate is genuinely independent - which is precisely why the value must come from you.',
@@ -908,6 +997,25 @@ Returns evide_id and intake_hash as independent proof that the agent recognized 
                             },
                         },
                     },
+                    declarations: {
+                        type: 'array',
+                        description: 'Optional: EVIDE ANCHOR declarations of the operational perimeter (environment, privileges, purpose, tools, prohibited operations, agent configuration) the agent was authorized within, before it acted. EVIDE preserves the declaration only - it does not verify its correctness, apply it as policy, or compare it with observed behavior. Declaring the array automatically sets the required extensions registry entry.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                declaration_type: { type: 'string', description: 'Free text, e.g. environment_classification, privilege_scope, declared_purpose, tool_availability, prohibited_operations, agent_configuration.' },
+                                declared_value:   { type: 'string', description: 'The content of the declaration, e.g. "production" for an environment_classification.' },
+                                declarant:        { type: 'string', description: 'Who made this specific declaration - not necessarily the same identity as the record\'s authority.' },
+                                declared_at:      { type: 'string', description: 'ISO 8601 timestamp of when this declaration was made.' },
+                                declared_description: { type: 'string', description: 'Optional free-text elaboration.' },
+                                declared_attribution_status: {
+                                    type: 'string',
+                                    enum: ['attributed', 'fragmented', 'implicit', 'unknown'],
+                                    description: 'Optional: whether the authority behind this specific declaration is clearly attributed. Same status vocabulary as threshold_authority elsewhere in this schema.',
+                                },
+                            },
+                        },
+                    },
                     readiness_gate_id: {
                         type: 'string',
                         description: 'Identifier of the INDEPENDENT gate that assessed the boundary. Required whenever boundary_status is not "candidate". The client never fabricates this: an agent cannot certify the boundary it is itself crossing. EVIDE anchors the declaration, it does not verify that the gate is genuinely independent - which is precisely why the value must come from you.',
@@ -976,6 +1084,48 @@ Returns evide_id, intake_hash, the evidentiary profile, and a buffer_id. Keep th
                     parent_evide_id:       { type: 'string', description: 'Optional: record this one continues from.' },
                     chain_type:            { type: 'string' },
                     matter_reference:      { type: 'string' },
+                    evidence_references: {
+                        type: 'array',
+                        description: 'Optional: external artifacts this record refers to (screenshots, video, sensor logs, documents). EVIDE anchors the DECLARATION that the artifact exists - the file itself is never uploaded, and EVIDE never computes or verifies its hash. Declaring the array automatically sets the required extensions registry entry.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                artifact_type:         { type: 'string', description: 'e.g. document, recording, screenshot, sensor_log.' },
+                                pointer:               { type: 'string', description: 'Where the artifact lives in your own systems. Never fetched by EVIDE.' },
+                                declared_origin:       { type: 'string', description: 'System or party the artifact came from.' },
+                                declared_relationship: { type: 'string', description: 'How it relates to this decision, e.g. supporting_document, source_material.' },
+                                declared_description:  { type: 'string', description: 'Short human-readable description.' },
+                                declared_retention_status: {
+                                    type: 'string',
+                                    enum: ['persistent_storage', 'rolling_buffer', 'unknown'],
+                                    description: 'Whether the artifact is expected to still exist later. rolling_buffer means it may be gone by the time anyone looks.',
+                                },
+                                hash_algorithm: { type: 'string', description: 'e.g. sha256. Required if any hash field is given.' },
+                                hash_value:     { type: 'string', description: 'The digest itself. Required if any hash field is given.' },
+                                hash_scope:     { type: 'string', enum: ['full_file', 'segment', 'frame', 'archive'], description: 'What the digest covers. Required if any hash field is given.' },
+                                hashed_by:      { type: 'string', description: 'Who computed the digest. Required if any hash field is given: EVIDE anchors the hash exactly as declared and never verifies it, so its provenance must be stated. It is never inferred from the agent identity.' },
+                            },
+                        },
+                    },
+                    declarations: {
+                        type: 'array',
+                        description: 'Optional: EVIDE ANCHOR declarations of the operational perimeter (environment, privileges, purpose, tools, prohibited operations, agent configuration) the agent was authorized within, before it acted. EVIDE preserves the declaration only - it does not verify its correctness, apply it as policy, or compare it with observed behavior. Declaring the array automatically sets the required extensions registry entry.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                declaration_type: { type: 'string', description: 'Free text, e.g. environment_classification, privilege_scope, declared_purpose, tool_availability, prohibited_operations, agent_configuration.' },
+                                declared_value:   { type: 'string', description: 'The content of the declaration, e.g. "production" for an environment_classification.' },
+                                declarant:        { type: 'string', description: 'Who made this specific declaration - not necessarily the same identity as the record\'s authority.' },
+                                declared_at:      { type: 'string', description: 'ISO 8601 timestamp of when this declaration was made.' },
+                                declared_description: { type: 'string', description: 'Optional free-text elaboration.' },
+                                declared_attribution_status: {
+                                    type: 'string',
+                                    enum: ['attributed', 'fragmented', 'implicit', 'unknown'],
+                                    description: 'Optional: whether the authority behind this specific declaration is clearly attributed. Same status vocabulary as threshold_authority elsewhere in this schema.',
+                                },
+                            },
+                        },
+                    },
                 },
                 required: ['source_reference', 'decision_type', 'decision_summary'],
             },
@@ -1085,6 +1235,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 chainType:            args.chain_type              || null,
                 matterReference:      args.matter_reference        || null,
                 evidenceReferences:   args.evidence_references     || [],
+                declarations:         args.declarations            || [],
                 readinessGateId:      args.readiness_gate_id       || null,
                 readinessGateScope:   args.readiness_gate_scope    || null,
             });
@@ -1121,6 +1272,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 chainType:           args.chain_type          || null,
                 matterReference:     args.matter_reference    || null,
                 evidenceReferences:  args.evidence_references || [],
+                declarations:        args.declarations        || [],
                 readinessGateId:     args.readiness_gate_id   || null,
                 readinessGateScope:  args.readiness_gate_scope|| null,
             });
@@ -1170,6 +1322,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 chainType:            args.chain_type              || null,
                 matterReference:      args.matter_reference        || null,
                 evidenceReferences:   args.evidence_references     || [],
+                declarations:         args.declarations            || [],
                 readinessGateId:      args.readiness_gate_id       || null,
                 readinessGateScope:   args.readiness_gate_scope    || null,
             });
