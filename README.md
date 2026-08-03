@@ -2,7 +2,7 @@
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-blue)
 ![MCP Compatible](https://img.shields.io/badge/MCP-compatible-success)
 
-# EVIDE MCP Server v1.2.0
+# EVIDE MCP Server v1.3.0
 
 MCP server connecting AI agents to the [EVIDE External Evidentiary Deposit](https://app.certifywebcontent.com) API.
 
@@ -12,8 +12,9 @@ EVIDE crystallizes AI agent decisions, escalations, and governance states into i
 
 ---
 
-## What's New in v1.2.0
+## What's New in v1.3.0
 
+- **EVIDE ANCHOR.** `declarations` on `evide_intake`, `evide_escalate` and `evide_intake_esb`: explicit, attributable, time-bound statements of the operational perimeter (environment, privileges, purpose, tools, prohibited operations, agent configuration) the agent was authorized within, before it acted. EVIDE preserves the declaration only -- it never verifies its correctness, applies it as policy, or compares it against observed behavior.
 - **EVIDE Schema 2.1.** Previous versions declared `evide_schema: 2.0` and were rejected by production with `unsupported_schema` on every deposit. If you cloned before July 2026, your copy could not deposit at all.
 - **Evidentiary Continuity.** `parent_evide_id`, `chain_type` and `matter_reference` on both deposit tools, with the four refusal codes documented.
 - **External Artifacts.** `evidence_references` with structured hash declaration; the `extensions` registry is kept aligned by the client.
@@ -167,6 +168,31 @@ EVIDE anchors the **declaration** that an artifact exists — the file itself is
 
 Declaring the array automatically sets `extensions: ["evidence_references"]`. That registry is opt-in in both directions — a block present but undeclared is rejected, and a declaration with no content is rejected too — so the client keeps the two aligned by construction.
 
+**Optional operational perimeter declarations** (`declarations`, EVIDE ANCHOR):
+
+```
+{
+  "source_reference": "CDR-2026-00424",
+  "decision_type": "operational_perimeter_declaration",
+  "decision_summary": "Environment classification declared before agent action.",
+  "declarations": [
+    {
+      "declaration_type": "environment_classification",
+      "declared_value": "production",
+      "declarant": "devops-lead",
+      "declared_at": "2026-08-03T16:30:00Z",
+      "declared_attribution_status": "attributed"
+    }
+  ]
+}
+```
+
+A Declaration is an explicit, attributable, time-bound statement of the operational perimeter (environment, privileges, purpose, tools, prohibited operations, agent configuration) an agent was authorized within, **before** it acted. EVIDE preserves the declaration only — it never verifies its correctness, applies it as policy, or compares it against observed behavior. This is the primitive behind the incident that motivated it: an agent that mistakes a production database for a disposable test environment is exactly the case a declared `environment_classification` makes independently reconstructable after the fact.
+
+This MCP-level schema is deliberately simplified relative to the full API: `declaration_type`, `declared_value`, `declarant`, `declared_at`, `declared_description` and a flattened `declared_attribution_status` are exposed here. Nested `subject_references`, `authority_source.references` and `declared_relations` (declaring that one Declaration supersedes, clarifies, or revokes another) are not — they remain available through the direct intake API for callers who need the nested form.
+
+Declaring the array automatically sets `extensions: ["declarations"]`, using the same opt-in registry as `evidence_references` — both can be declared together in the same deposit.
+
 **Optional chain parameters** (Evidentiary Continuity):
 
 ```
@@ -202,7 +228,7 @@ Crystallize the agent state **before proceeding** at a high-stakes or contestabl
 }
 ```
 
-`evide_escalate` accepts the same optional chain and `evidence_references` parameters as `evide_intake`, for the case where one escalation continues from another.
+`evide_escalate` accepts the same optional chain, `evidence_references` and `declarations` parameters as `evide_intake`, for the case where one escalation continues from another.
 
 Available triggers: `high_stakes_decision` · `contestable_state` · `legal_ambiguity` · `regulatory_threshold` · `governance_uncertainty` · `semantic_instability` · `human_review_required` · `authority_incoherence`
 
