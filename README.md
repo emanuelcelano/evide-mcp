@@ -193,6 +193,12 @@ This MCP-level schema is deliberately simplified relative to the full API: `decl
 
 Declaring the array automatically sets `extensions: ["declarations"]`, using the same opt-in registry as `evidence_references` — both can be declared together in the same deposit.
 
+### Atomic Declaration Rule
+
+Each Declaration should represent a single attributable statement. When a request describes multiple independent facts -- for example, both an environment classification and a privilege scope -- each should be preserved as its own Declaration, not merged into one.
+
+Composite `declaration_type` values (e.g. `environment_and_privilege`) are accepted by the schema -- `declaration_type` is free text by design -- but discouraged: a merged declaration cannot later be superseded, clarified, or revoked independently from the facts it bundles together. If the environment classification changes but the privilege scope does not, only the `environment_classification` Declaration should be superseded -- that becomes impossible once the two are combined into one.
+
 **Optional chain parameters** (Evidentiary Continuity):
 
 ```
@@ -343,6 +349,24 @@ v1.2.0 was exercised through a real MCP client along the complete path -- client
 | `evide_intake_esb` -> two `evide_buffer_observe` -> `evide_buffer_close` | full lifecycle over a real **502-second** window, with a declared `stabilization_score` |
 
 **Not yet exercised along that path:** `evide_escalate`, `evide_owner_info`, `evide_check`, and the chain parameters. A defect in the `evide_escalate` handler was found by code review immediately afterwards -- precisely because it was not part of the run. The distinction between what has been executed and what has only been read is kept here for the same reason it is kept in the evidentiary records themselves.
+
+### End-to-end validation, August 2026 (EVIDE ANCHOR)
+
+v1.3.0 was exercised through five natural-language scenarios given to a real MCP client (Claude Desktop), each producing a genuine deposit and a downloaded Evidentiary Artifact Record -- not a re-run of the builders in isolation.
+
+| exercised | result |
+|---|---|
+| Standard intake, no extensions | deposited; FCC `unknown` (see note below) |
+| `evide_intake` with `evidence_references` | external artifact anchored -- pointer, origin, and hash fields all populated exactly as declared, file never uploaded |
+| `evide_intake_esb` with `evide_buffer_observe` / `evide_buffer_close` | buffer opened and closed; the agent closed it early for the demo and said so in `buffer_notes`, rather than presenting a shortened window as a real one |
+| `evide_intake` with `declarations` | operational perimeter declaration (environment, declarant, timestamp, attribution) preserved exactly as stated |
+| `evide_intake_esb` with `evidence_references`, `declarations`, and a buffer together | all three deposited in the same record without conflict |
+
+**FCC read `unknown` on every scenario, including the one intended to show a stable state.** None of the five prompts declared an independently verified boundary (`boundary_status: verified` with a real `readiness_gate`) -- without one, `runtime_visibility` stays null and FCC cannot read anything but `unknown`. This is the model working as designed, not a defect: it reflects the absence of an independently declared readiness gate in the test scenarios, not an issue in the code.
+
+**One agent, in one combined scenario, merged two independent facts into a single Declaration** (`declaration_type: "environment_and_privilege"`) instead of two separate ones. Accepted by the schema -- `declaration_type` is free text by design -- but it is exactly the case the Atomic Declaration Rule above exists to discourage: a merged Declaration cannot later be superseded or corrected independently for just one of the facts it bundles. This observation is reported as an implementation note, not as a general property of LLMs.
+
+This was one agent (Claude, via Claude Desktop) run once through each scenario -- not a claim about how any LLM would behave in general. Within that scope, the agent populated every optional field correctly, including nested objects (`authority_source`, `hash`), without requiring a predefined payload template.
 
 ---
 
