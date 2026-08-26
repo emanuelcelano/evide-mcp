@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EVIDE MCP Server v1.2.0
+ * EVIDE MCP Server v1.3.0
  * Connects any agentic AI system to the EVIDE Evidentiary Deposit API.
  *
  * IDENTITY REQUIREMENT:
@@ -21,6 +21,19 @@
  *   evide_escalate       - crystallize a high-stakes / contestable agent state before proceeding
  *   evide_owner_info     - return configured owner identity (no key exposure)
  *   evide_check          - verification guidance for a deposited record
+ *
+ * CHANGES IN v1.3.0:
+ *   - EVIDE ANCHOR: declarations parameter on evide_intake, evide_escalate and
+ *     evide_intake_esb - explicit, attributable, time-bound statements of the
+ *     operational perimeter (environment, privileges, purpose, tools, prohibited
+ *     operations, agent configuration) the agent was authorized within, before
+ *     it acted. EVIDE preserves the declaration only - it never verifies its
+ *     correctness, applies it as policy, or compares it against observed
+ *     behavior. Declaring the array sets extensions: ["declarations"].
+ *   - This MCP-level Declaration schema is deliberately simplified relative to
+ *     the full API: subject_references, authority_source.references and
+ *     declared_relations are not exposed here and remain available only
+ *     through the direct intake API.
  *
  * CHANGES IN v1.2.0:
  *   - evide_schema corrected from 2.0 to 2.1. Every deposit was previously
@@ -768,7 +781,7 @@ function formatEvideResponse(result, label = 'EVIDE deposit') {
 // =============================================================================
 
 const server = new Server(
-    { name: 'evide-mcp', version: '1.2.0' },
+    { name: 'evide-mcp', version: '1.3.0' },
     { capabilities: { tools: {} } }
 );
 
@@ -1408,7 +1421,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{
                 type: 'text',
                 text: [
-                    `EVIDE MCP v1.2.0 - Identity Configuration`,
+                    `EVIDE MCP v1.3.0 - Identity Configuration`,
                     ``,
                     `ACCOUNTABLE IDENTITY (owner - DAPI-bound):`,
                     `  Owner ID:    ${CONFIG.ownerId}`,
@@ -1468,7 +1481,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 process.stderr.write(
-    `[EVIDE MCP v1.2.0] Server started.\n` +
+    `[EVIDE MCP v1.3.0] Server started.\n` +
     `  Owner: ${CONFIG.ownerId} | Agent: ${CONFIG.agentId} / ${CONFIG.agentSystem}\n` +
     `  Credentials: present. Key validity verified at first deposit.\n`
 );
