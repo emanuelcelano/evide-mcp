@@ -30,12 +30,12 @@ EVIDE crystallizes AI agent decisions, escalations, and governance states into i
 
 ### 1. DAPI -- Verified Identity
 
-EVIDE does not accept anonymous deposits. Every record must be attributable to a verified, non-repudiable human identity.
+EVIDE does not accept anonymous deposits. Every record must be attributable to a verified human identity.
 
-**DAPI** (Digital Attestation of Personal Identity) is the identity layer that makes every deposit legally attributable. The DAPI number belongs to the human or organization responsible for the AI agent -- not to the agent itself. The agent cannot self-certify.
+**DAPI** (Digital Attestation of Personal Identity) is the identity layer that binds every deposit to a verified, attributable identity. The DAPI number belongs to the human or organization responsible for the AI agent -- not to the agent itself. The agent cannot self-certify.
 
-> **EVIDE does not certify the correctness of the decision itself.
-> It certifies the externally reconstructable responsibility and governance conditions present at closure time.**
+> **EVIDE does not determine whether the decision itself was correct.
+> It preserves the externally reconstructable responsibility and governance conditions present at closure time, making them independently examinable.**
 
 **How to obtain a DAPI:** [dapi-certification.com](https://dapi-certification.com)
 
@@ -191,6 +191,8 @@ A Declaration is an explicit, attributable, time-bound statement of the operatio
 
 This MCP-level schema is deliberately simplified relative to the full API: `declaration_type`, `declared_value`, `declarant`, `declared_at`, `declared_description` and a flattened `declared_attribution_status` are exposed here. Nested `subject_references`, `authority_source.references` and `declared_relations` (declaring that one Declaration supersedes, clarifies, or revokes another) are not — they remain available through the direct intake API for callers who need the nested form.
 
+**`declaration_digest` is computed server-side, not by this client.** For each Declaration, the API computes `SHA-256("EVIDE_DECLARATION_V1:" + canonical_json(Declaration))` at intake time and returns it as part of the stored record. The MCP client never calculates or sends this value — it has no `declaration_digest` field in the tool schema above. This gives each Declaration its own tamper-evidence independent of the intake's overall `intake_hash`, and is what `declared_relations` on the full API reference when one Declaration supersedes another.
+
 Declaring the array automatically sets `extensions: ["declarations"]`, using the same opt-in registry as `evidence_references` — both can be declared together in the same deposit.
 
 ### Atomic Declaration Rule
@@ -324,31 +326,7 @@ Responsibility always converges on the DAPI-verified owner. The agent cannot sel
 
 ## Live Validation
 
-First live agent evidentiary crystallization: **May 2026**, via Claude Desktop + MCP.
-
-```
-continuity.state:    degraded
-boundary_readiness:  verified_partial
-unresolved_signals:  8
-FCC:                 DEGRADED
-```
-
-The record preserved a degraded governance state without flattening instability into false certainty.
-
-[LinkedIn -- First Live Agent Evidentiary Crystallization](https://www.linkedin.com/feed/update/urn:li:activity:7463539504990212096/)
-
-### End-to-end validation, July 2026
-
-v1.2.0 was exercised through a real MCP client along the complete path -- client, JSON-RPC over stdio, payload builders, HTTP transport, EVIDE Intake API -- rather than by re-running the builders in isolation.
-
-| exercised | result |
-|---|---|
-| `evide_intake` with an incomplete hash declaration | refused **in the client**, before any network call |
-| `evide_intake` with `verified_partial` and no declared gate | refused in the client |
-| `evide_intake` with a structured hash and `boundary_status: candidate` | deposited; FCC, DWC and FAC all `unknown`, as expected with no independent gate |
-| `evide_intake_esb` -> two `evide_buffer_observe` -> `evide_buffer_close` | full lifecycle over a real **502-second** window, with a declared `stabilization_score` |
-
-**Not yet exercised along that path:** `evide_escalate`, `evide_owner_info`, `evide_check`, and the chain parameters. A defect in the `evide_escalate` handler was found by code review immediately afterwards -- precisely because it was not part of the run. The distinction between what has been executed and what has only been read is kept here for the same reason it is kept in the evidentiary records themselves.
+The two rounds below are the current reference for what has actually been exercised end-to-end. A historical note on the first live deposit, May 2026, follows at the end of this section.
 
 ### End-to-end validation, August 2026 (EVIDE ANCHOR)
 
@@ -367,6 +345,34 @@ v1.3.0 was exercised through five natural-language scenarios given to a real MCP
 **One agent, in one combined scenario, merged two independent facts into a single Declaration** (`declaration_type: "environment_and_privilege"`) instead of two separate ones. Accepted by the schema -- `declaration_type` is free text by design -- but it is exactly the case the Atomic Declaration Rule above exists to discourage: a merged Declaration cannot later be superseded or corrected independently for just one of the facts it bundles. This observation is reported as an implementation note, not as a general property of LLMs.
 
 This was one agent (Claude, via Claude Desktop) run once through each scenario -- not a claim about how any LLM would behave in general. Within that scope, the agent populated every optional field correctly, including nested objects (`authority_source`, `hash`), without requiring a predefined payload template.
+
+### End-to-end validation, July 2026
+
+v1.2.0 was exercised through a real MCP client along the complete path -- client, JSON-RPC over stdio, payload builders, HTTP transport, EVIDE Intake API -- rather than by re-running the builders in isolation.
+
+| exercised | result |
+|---|---|
+| `evide_intake` with an incomplete hash declaration | refused **in the client**, before any network call |
+| `evide_intake` with `verified_partial` and no declared gate | refused in the client |
+| `evide_intake` with a structured hash and `boundary_status: candidate` | deposited; FCC, DWC and FAC all `unknown`, as expected with no independent gate |
+| `evide_intake_esb` -> two `evide_buffer_observe` -> `evide_buffer_close` | full lifecycle over a real **502-second** window, with a declared `stabilization_score` |
+
+**Not yet exercised along that path:** `evide_escalate`, `evide_owner_info`, `evide_check`, and the chain parameters. A defect in the `evide_escalate` handler -- the tool's own default silently overrode `boundary_status` to `verified_partial`, so any escalation without an explicit status failed for want of a readiness gate -- was found by code review immediately afterwards, precisely because it was not part of this run. **It was fixed the same month, July 29 2026 (commit `f4d0481`): the handler now defaults to `candidate`, matching the builder, and the tool schema exposes all four boundary states.** The distinction between what has been executed and what has only been read is kept here for the same reason it is kept in the evidentiary records themselves.
+
+### First live crystallization, May 2026 (historical)
+
+First live agent evidentiary crystallization, via Claude Desktop + MCP -- superseded by the two validation rounds above, kept here for the record.
+
+```
+continuity.state:    degraded
+boundary_readiness:  verified_partial
+unresolved_signals:  8
+FCC:                 DEGRADED
+```
+
+The record preserved a degraded governance state without flattening instability into false certainty.
+
+[LinkedIn -- First Live Agent Evidentiary Crystallization](https://www.linkedin.com/feed/update/urn:li:activity:7463539504990212096/)
 
 ---
 
