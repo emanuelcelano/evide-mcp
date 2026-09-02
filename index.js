@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EVIDE MCP Server v1.3.0
+ * EVIDE MCP Server v1.4.0
  * Connects any agentic AI system to the EVIDE Evidentiary Deposit API.
  *
  * IDENTITY REQUIREMENT:
@@ -10,7 +10,7 @@
  *
  * ARCHITECTURAL SEPARATION (since v1.1.0):
  *   authority          = accountable human / organization identity (DAPI-bound)
- *   execution_identity = the agent or automated system that produced the closure
+ *   execution_identity = declared execution context associated with the closure (agent, model, session, run - as supplied)
  *   escalation_context = why the agent is requesting evidentiary crystallization
  *
  * Tools:
@@ -21,6 +21,19 @@
  *   evide_escalate       - crystallize a high-stakes / contestable agent state before proceeding
  *   evide_owner_info     - return configured owner identity (no key exposure)
  *   evide_check          - verification guidance for a deposited record
+ *
+ * CHANGES IN v1.4.0:
+ *   - execution_identity expanded: model_reference, agent_name, deployment_id
+ *     (deployment-level, declared once via CONFIG/env) and session_id, run_id
+ *     (execution-specific, call-time only - accepted as optional arguments on
+ *     evide_intake, evide_escalate and evide_intake_esb, never from config).
+ *   - Removed software-generated placeholders ("agent_unspecified", "Unknown
+ *     Agent System") from execution_identity: unset optional fields are now
+ *     omitted rather than filled in. Absence remains absence.
+ *   - accountability_model: "owner_bound" unchanged - still hardcoded, still
+ *     never derived from execution_identity content.
+ *   - Backward-compatible: a record containing only the pre-1.4.0 fields
+ *     remains fully valid; no migration required.
  *
  * CHANGES IN v1.3.0:
  *   - EVIDE ANCHOR: declarations parameter on evide_intake, evide_escalate and
@@ -80,13 +93,24 @@ import {
 // CONFIGURATION
 // =============================================================================
 
-const CONFIG = {
+export const CONFIG = {
     apiKey:      process.env.EVIDE_API_KEY      || '',
     dapiNumber:  process.env.EVIDE_DAPI_NUMBER  || '',
     ownerId:     process.env.EVIDE_OWNER_ID     || '',
     ownerRole:   process.env.EVIDE_OWNER_ROLE   || 'AI System Operator',
-    agentSystem: process.env.EVIDE_AGENT_SYSTEM || 'Unknown Agent System',
-    agentId:     process.env.EVIDE_AGENT_ID     || 'agent_unspecified',
+    // agentSystem/agentId: no placeholder fallback. Absence must remain
+    // absence (execution_identity contract, v2.2) - a client-generated
+    // string like "agent_unspecified" is not a declared value and would
+    // be indistinguishable from one on later review. If unset, the field
+    // is simply omitted from execution_identity - see buildExecutionIdentity().
+    agentSystem: process.env.EVIDE_AGENT_SYSTEM || undefined,
+    agentId:     process.env.EVIDE_AGENT_ID     || undefined,
+    // Optional deployment-level execution-context descriptors (execution_identity
+    // contract, v2.2). Static, declared once per client configuration - unlike
+    // session_id/run_id below, which are call-time only and never come from here.
+    modelReference: process.env.EVIDE_MODEL_REFERENCE || undefined,
+    agentName:      process.env.EVIDE_AGENT_NAME      || undefined,
+    deploymentId:   process.env.EVIDE_DEPLOYMENT_ID   || undefined,
     apiEndpoint: process.env.EVIDE_API_ENDPOINT || 'https://app.certifywebcontent.com/api/intake/json',
 };
 
@@ -269,15 +293,77 @@ function buildBufferClose(args) {
 
 /**
  * execution_identity block - always present when depositing via MCP.
- * Separates the accountable owner identity from the operational agent identity.
+ * Separates the accountable owner identity from the declared execution context.
  */
-function buildExecutionIdentity() {
-    return {
-        type:               'agent_identity',
-        agent_id:           CONFIG.agentId,
-        agent_system:       CONFIG.agentSystem,
-        accountability_model: 'owner_bound',   // responsibility converges on DAPI-verified owner
+/**
+ * execution_identity contract v2.2 (frozen).
+ *
+ * Every field except `type` and `accountability_model` is optional and
+ * omitted, never placeholder-filled, when not available - absence must
+ * remain absence. A value consisting only of whitespace is treated as
+ * absent, not preserved verbatim - see meaningfulValue() below. Fields are
+ * added in two groups:
+ *
+ *  - deployment-level (agent_id, agent_system, model_reference, agent_name,
+ *    deployment_id): static, declared once via CONFIG/env, unchanged across
+ *    every call from a given client configuration.
+ *  - execution-specific (session_id, run_id): dynamic, can only be supplied
+ *    per tool call - there is no static-config channel for them, by design.
+ *
+ * Within this EVIDE MCP client contract, session_id and run_id are accepted
+ * only as call-time parameters. This defines their input path for deposits
+ * produced through this specific client - it is a property of this
+ * implementation, not something EVIDE itself enforces or can attest to for
+ * every possible submission path. execution_identity is preserved
+ * server-side as an opaque object (see IntakeCore.php); its presence in a
+ * record does not independently authenticate the identifier itself or its
+ * origin, regardless of which channel supplied it.
+ *
+ * accountability_model stays hardcoded to 'owner_bound' regardless of what
+ * execution context is declared or omitted - it is a structural invariant,
+ * not operator-supplied metadata, and never derived from any of the fields
+ * above. Accountability remains associated, within this evidentiary model,
+ * with the DAPI-verified owner in `authority`, independently of this block.
+ */
+
+/**
+ * Returns the original string unchanged if it contains at least one
+ * non-whitespace character, otherwise null. trim() is used only to test
+ * for presence - it never changes the value that gets preserved. undefined,
+ * null, "", and whitespace-only strings ("   ", "\t") are all treated as
+ * absent, exactly like an unset value. Never substitutes a placeholder,
+ * and never normalizes a meaningful value (no trimming, case changes, or
+ * any other transformation of what was actually supplied); only decides
+ * inclusion vs omission.
+ */
+export function meaningfulValue(value) {
+    if (typeof value !== 'string') return null;
+    return value.trim().length > 0 ? value : null;
+}
+
+export function buildExecutionIdentity(sessionId = null, runId = null) {
+    const identity = {
+        type: 'agent_identity',
     };
+
+    const agentId        = meaningfulValue(CONFIG.agentId);
+    const agentSystem    = meaningfulValue(CONFIG.agentSystem);
+    const modelReference = meaningfulValue(CONFIG.modelReference);
+    const agentName      = meaningfulValue(CONFIG.agentName);
+    const deploymentId   = meaningfulValue(CONFIG.deploymentId);
+    const declaredSession = meaningfulValue(sessionId);
+    const declaredRun     = meaningfulValue(runId);
+
+    if (agentId)         identity.agent_id        = agentId;
+    if (agentSystem)     identity.agent_system     = agentSystem;
+    if (modelReference)  identity.model_reference  = modelReference;
+    if (agentName)       identity.agent_name       = agentName;
+    if (deploymentId)    identity.deployment_id    = deploymentId;
+    if (declaredSession) identity.session_id       = declaredSession;
+    if (declaredRun)     identity.run_id           = declaredRun;
+
+    identity.accountability_model = 'owner_bound';
+    return identity;
 }
 
 /**
@@ -530,7 +616,7 @@ function buildBoundaryReadiness(status, unresolvedSignals = [], gate = {}) {
 /**
  * Standard finalized decision deposit.
  */
-function buildIntakePayload({
+export function buildIntakePayload({
     sourceReference,
     decisionType,
     decisionSummary,
@@ -550,6 +636,8 @@ function buildIntakePayload({
     declarations          = [],
     readinessGateId       = null,
     readinessGateScope    = null,
+    sessionId             = null,
+    runId                 = null,
 }) {
     const now     = new Date().toISOString();
     const closure = closureTimestamp || now;
@@ -558,7 +646,12 @@ function buildIntakePayload({
         evide_schema:         '2.1',
         created_at_utc:       now,
         object_class:         'decision_record',
-        source_system:        CONFIG.agentSystem,
+        // source_system is a required top-level schema field (IntakeCore.php
+        // $required), unrelated to the execution_identity contract - it must
+        // never be omitted, unlike execution_identity.agent_system below.
+        // Kept on its own fallback so a deployment without EVIDE_AGENT_SYSTEM
+        // set still produces a valid deposit instead of a rejected one.
+        source_system:        CONFIG.agentSystem || 'Unknown Agent System',
         source_reference:     sourceReference,
         source_timestamp_utc: now,
         decision: {
@@ -572,7 +665,7 @@ function buildIntakePayload({
             role:        CONFIG.ownerRole,
             dapi_number: CONFIG.dapiNumber,
         },
-        execution_identity: buildExecutionIdentity(),
+        execution_identity: buildExecutionIdentity(sessionId, runId),
         human_oversight: {
             is_declared:    true,
             declared_level: humanOversightLevel,
@@ -623,7 +716,7 @@ function buildIntakePayload({
  * Always uses verified_partial or unverifiable boundary_readiness.
  * Includes escalation_context explaining why crystallization was requested.
  */
-function buildEscalatePayload({
+export function buildEscalatePayload({
     sourceReference,
     agentStateSummary,
     escalationTrigger,
@@ -640,6 +733,8 @@ function buildEscalatePayload({
     matterReference       = null,
     evidenceReferences    = [],
     declarations          = [],
+    sessionId             = null,
+    runId                 = null,
 }) {
     const now = new Date().toISOString();
 
@@ -658,7 +753,9 @@ function buildEscalatePayload({
         evide_schema:         '2.1',
         created_at_utc:       now,
         object_class:         'escalation_record',
-        source_system:        CONFIG.agentSystem,
+        // See buildIntakePayload() for why source_system keeps its own
+        // fallback while execution_identity.agent_system does not.
+        source_system:        CONFIG.agentSystem || 'Unknown Agent System',
         source_reference:     sourceReference,
         source_timestamp_utc: now,
         decision: {
@@ -672,7 +769,7 @@ function buildEscalatePayload({
             role:        CONFIG.ownerRole,
             dapi_number: CONFIG.dapiNumber,
         },
-        execution_identity: buildExecutionIdentity(),
+        execution_identity: buildExecutionIdentity(sessionId, runId),
         escalation_context: {
             type:    'legal_crystallization',
             trigger: escalationTrigger,
@@ -769,7 +866,7 @@ function formatEvideResponse(result, label = 'EVIDE deposit') {
     lines.push(
         ``,
         `Owner (accountable):   ${CONFIG.ownerId} (${CONFIG.ownerRole})`,
-        `Agent (execution):     ${CONFIG.agentId} / ${CONFIG.agentSystem}`,
+        `Agent (execution):     ${CONFIG.agentId ?? '(not declared)'} / ${CONFIG.agentSystem ?? '(not declared)'}`,
         `DAPI prefix:           ${CONFIG.dapiNumber.substring(0, 4)}xxxxxx`,
     );
 
@@ -780,8 +877,8 @@ function formatEvideResponse(result, label = 'EVIDE deposit') {
 // MCP SERVER
 // =============================================================================
 
-const server = new Server(
-    { name: 'evide-mcp', version: '1.3.0' },
+export const server = new Server(
+    { name: 'evide-mcp', version: '1.4.0' },
     { capabilities: { tools: {} } }
 );
 
@@ -797,7 +894,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             name: 'evide_intake',
             description: `Deposit a finalized AI decision into EVIDE as an independently verifiable evidentiary record.
 
-The deposit anchors the responsibility of the agent owner (pre-configured via DAPI + API key) at the exact moment of boundary crossing. The owner is the accountable identity. The agent is the execution identity. These are architecturally separated.
+The deposit anchors the accountability of the agent owner (pre-configured via DAPI + API key) at the exact moment of boundary crossing. The owner is the accountable identity. The agent is the execution identity. These are architecturally separated.
 
 Returns evide_id, intake_hash, and the Forensic Cross-Check (FCC) continuity state.
 
@@ -917,6 +1014,14 @@ For high-stakes or contestable states, use evide_escalate instead.`,
                         type: 'string',
                         description: 'Optional: identifier of the matter this lineage belongs to. Inherited from the parent when omitted. If declared on both sides it must match exactly - this is what prevents an incorrect parent_evide_id from silently attaching a decision to an unrelated matter inside the same organization.',
                     },
+                    session_id: {
+                        type: 'string',
+                        description: 'Optional: declared identifier of the broader interaction/session associated with this decision, if your system has one. Call-time only - there is no client configuration equivalent for this MCP client. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
+                    },
+                    run_id: {
+                        type: 'string',
+                        description: 'Optional: declared identifier of the specific execution/run associated with this decision, if your system has one. Call-time only, same as session_id. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
+                    },
                 },
                 required: ['source_reference', 'decision_type', 'decision_summary'],
             },
@@ -932,7 +1037,7 @@ For high-stakes or contestable states, use evide_escalate instead.`,
 Unlike evide_intake (which deposits a finalized decision), evide_escalate is called BEFORE or AT a risk boundary - when the agent detects that the current state requires independent anchoring before proceeding.
 
 The deposit includes:
-- execution_identity: the agent that triggered the escalation
+- execution_identity: declared agent/execution context associated with the escalation
 - escalation_context: why crystallization was requested
 - boundary_readiness: candidate by default. An agent stopping at a boundary has had no independent gate assess it, so the honest declaration is that none took place. FCC, DWC and FAC will read unknown: that is an evidentiary result, not a processing failure. Supply readiness_gate_id and readiness_gate_scope only if a genuinely independent gate assessed the boundary.
 
@@ -943,7 +1048,7 @@ Use cases:
 - Moderation system at an edge case requiring human judgment
 - Any agent detecting contestable conditions before proceeding
 
-Returns evide_id and intake_hash as independent proof that the agent recognized the boundary condition at that exact moment.`,
+Returns evide_id and intake_hash for the independently timestamped evidentiary record preserving that the agentic workflow declared the boundary condition at that material point.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -1049,6 +1154,14 @@ Returns evide_id and intake_hash as independent proof that the agent recognized 
                         type: 'string',
                         description: 'Optional: identifier of the matter this lineage belongs to. Inherited from the parent when omitted. If declared on both sides it must match exactly.',
                     },
+                    session_id: {
+                        type: 'string',
+                        description: 'Optional: declared identifier of the broader interaction/session associated with this escalation, if your system has one. Call-time only - there is no client configuration equivalent for this MCP client. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
+                    },
+                    run_id: {
+                        type: 'string',
+                        description: 'Optional: declared identifier of the specific execution/run associated with this escalation, if your system has one. Call-time only, same as session_id. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
+                    },
                 },
                 required: ['source_reference', 'agent_state_summary', 'escalation_trigger', 'escalation_reason'],
             },
@@ -1138,6 +1251,14 @@ Returns evide_id, intake_hash, the evidentiary profile, and a buffer_id. Keep th
                                 },
                             },
                         },
+                    },
+                    session_id: {
+                        type: 'string',
+                        description: 'Optional: declared identifier of the broader interaction/session associated with this decision, if your system has one. Call-time only. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
+                    },
+                    run_id: {
+                        type: 'string',
+                        description: 'Optional: declared identifier of the specific execution/run associated with this decision, if your system has one. Call-time only, same as session_id. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
                     },
                 },
                 required: ['source_reference', 'decision_type', 'decision_summary'],
@@ -1251,6 +1372,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 declarations:         args.declarations            || [],
                 readinessGateId:      args.readiness_gate_id       || null,
                 readinessGateScope:   args.readiness_gate_scope    || null,
+                sessionId:            args.session_id              || null,
+                runId:                args.run_id                  || null,
             });
 
             const result = await evidePost(payload);
@@ -1288,6 +1411,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 declarations:        args.declarations        || [],
                 readinessGateId:     args.readiness_gate_id   || null,
                 readinessGateScope:  args.readiness_gate_scope|| null,
+                sessionId:           args.session_id          || null,
+                runId:               args.run_id              || null,
             });
 
             const result = await evidePost(payload);
@@ -1338,6 +1463,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 declarations:         args.declarations            || [],
                 readinessGateId:      args.readiness_gate_id       || null,
                 readinessGateScope:   args.readiness_gate_scope    || null,
+                sessionId:            args.session_id              || null,
+                runId:                args.run_id                  || null,
             });
 
             const result = await evidePost(payload, CONFIG.esbEndpoints.intake);
@@ -1421,7 +1548,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{
                 type: 'text',
                 text: [
-                    `EVIDE MCP v1.3.0 - Identity Configuration`,
+                    `EVIDE MCP v1.4.0 - Identity Configuration`,
                     ``,
                     `ACCOUNTABLE IDENTITY (owner - DAPI-bound):`,
                     `  Owner ID:    ${CONFIG.ownerId}`,
@@ -1430,8 +1557,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     `  API key:     ${CONFIG.apiKey.substring(0, 8)}...`,
                     ``,
                     `EXECUTION IDENTITY (agent - operational):`,
-                    `  Agent ID:    ${CONFIG.agentId}`,
-                    `  Agent system: ${CONFIG.agentSystem}`,
+                    `  Agent ID:    ${CONFIG.agentId ?? '(not declared)'}`,
+                    `  Agent system: ${CONFIG.agentSystem ?? '(not declared)'}`,
                     `  Accountability model: owner_bound`,
                     ``,
                     `API endpoint: ${CONFIG.apiEndpoint}`,
@@ -1477,11 +1604,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // =============================================================================
 // START
 // =============================================================================
+// EVIDE_MCP_TEST_IMPORT guards server startup so tests can `import` this file
+// to exercise buildExecutionIdentity/buildIntakePayload/buildEscalatePayload
+// against the real implementation, without spawning a live stdio MCP server.
+// Unset in every real deployment - production behavior is unchanged.
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-process.stderr.write(
-    `[EVIDE MCP v1.3.0] Server started.\n` +
-    `  Owner: ${CONFIG.ownerId} | Agent: ${CONFIG.agentId} / ${CONFIG.agentSystem}\n` +
-    `  Credentials: present. Key validity verified at first deposit.\n`
-);
+if (process.env.EVIDE_MCP_TEST_IMPORT !== '1') {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    process.stderr.write(
+        `[EVIDE MCP v1.4.0] Server started.\n` +
+        `  Owner: ${CONFIG.ownerId} | Agent: ${CONFIG.agentId ?? '(not declared)'} / ${CONFIG.agentSystem ?? '(not declared)'}\n` +
+        `  Credentials: present. Key validity verified at first deposit.\n`
+    );
+}
