@@ -158,6 +158,17 @@ Deposit a finalized AI decision as an evidentiary record.
 }
 ```
 
+**Keep `decision_summary` short - it becomes the record's title.** It is stored and displayed as-is, with no length management on the server side: a paragraph-length `decision_summary` becomes a paragraph-length title, and very long values may be truncated by the underlying storage in ways that cut a title off mid-word. Treat it as a one-line label, not a narrative.
+
+For the fuller explanation - why the decision was made, what was ambiguous, what evidence was weighed - use the optional `rationale` field instead. It exists exactly for this purpose and has no practical length expectation the way a title does.
+
+```json
+{
+  "decision_summary": "Clause 8.3 - liability scope ambiguous, Rossi Manufacturing contract",
+  "rationale": "The limitation-of-liability clause's scope is ambiguous relative to a recent similar dispute, decided differently by two lower courts. Final assessment is on hold pending internal legal opinion and updated case law."
+}
+```
+
 **Optional external artifacts** (`evidence_references`):
 
 ```
@@ -254,6 +265,8 @@ Crystallize the agent state **before proceeding** at a high-stakes or contestabl
 ```
 
 `evide_escalate` accepts the same optional chain, `evidence_references` and `declarations` parameters as `evide_intake`, for the case where one escalation continues from another.
+
+**`agent_state_summary` feeds the same title field as `decision_summary` above - keep it short for the same reason.** The fuller picture belongs in `escalation_reason`, which already exists for exactly that.
 
 Available triggers: `high_stakes_decision` · `contestable_state` · `legal_ambiguity` · `regulatory_threshold` · `governance_uncertainty` · `semantic_instability` · `human_review_required` · `authority_incoherence`
 
