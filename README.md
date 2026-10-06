@@ -139,6 +139,31 @@ Add to your MCP client configuration (`claude_desktop_config.json` or equivalent
 
 **`session_id` and `run_id` are not environment variables.** They vary per call and are accepted as optional call-time arguments on the deposit tools themselves -- see [`execution_identity` -- Declared Execution Context](#execution_identity--declared-execution-context) below.
 
+
+---
+
+## Gemini CLI
+
+Install as a Gemini CLI extension:
+
+```bash
+gemini extensions install https://github.com/emanuelcelano/evide-mcp
+```
+
+During installation Gemini CLI asks for the settings declared in `gemini-extension.json`: API key, DAPI number, owner ID, and the optional agent system and agent ID. To change them later:
+
+```bash
+gemini extensions config evide-mcp
+```
+
+Gemini CLI passes to the server only the variables declared in the manifest. `EVIDE_OWNER_ROLE`, `EVIDE_MODEL_REFERENCE`, `EVIDE_AGENT_NAME` and `EVIDE_DEPLOYMENT_ID` are therefore not available in this installation: the owner role falls back to its default and the other three are omitted.
+
+The extension runs `dist/evide-mcp.js`, a single-file bundle of `index.js` and its dependencies, so no `npm install` is needed. After changing `index.js`, rebuild it with:
+
+```bash
+npx esbuild index.js --bundle --platform=node --format=esm --target=node18 --outfile=dist/evide-mcp.js --legal-comments=eof --banner:js="import { createRequire as __evideCreateRequire } from 'module'; const require = __evideCreateRequire(import.meta.url);"
+```
+
 ---
 
 ## Tools
