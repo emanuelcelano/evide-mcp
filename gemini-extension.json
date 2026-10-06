@@ -1,0 +1,45 @@
+{
+  "name": "evide-mcp",
+  "version": "1.4.0",
+  "description": "Deposit evidentiary records of AI agent decisions into EVIDE (External Evidentiary Deposit). Requires a DAPI verified identity and an active EVIDE subscription.",
+  "mcpServers": {
+    "evide": {
+      "command": "node",
+      "args": ["${extensionPath}${/}dist${/}evide-mcp.js"],
+      "cwd": "${extensionPath}"
+    }
+  },
+  "contextFileName": "GEMINI.md",
+  "settings": [
+    {
+      "name": "EVIDE API key",
+      "description": "Your EVIDE API key. It belongs to the human or organization responsible for the agent, not to the agent.",
+      "envVar": "EVIDE_API_KEY",
+      "sensitive": true
+    },
+    {
+      "name": "DAPI number",
+      "description": "The 10-digit DAPI number (verified identity) of the API key owner.",
+      "envVar": "EVIDE_DAPI_NUMBER",
+      "sensitive": true
+    },
+    {
+      "name": "Owner ID",
+      "description": "Your owner identifier in the source system.",
+      "envVar": "EVIDE_OWNER_ID",
+      "sensitive": false
+    },
+    {
+      "name": "Agent system (optional)",
+      "description": "Declared name of the agent system. Leave empty if not declared.",
+      "envVar": "EVIDE_AGENT_SYSTEM",
+      "sensitive": false
+    },
+    {
+      "name": "Agent ID (optional)",
+      "description": "Declared identifier of the agent. Leave empty if not declared.",
+      "envVar": "EVIDE_AGENT_ID",
+      "sensitive": false
+    }
+  ]
+}
