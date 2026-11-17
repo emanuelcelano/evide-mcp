@@ -40,6 +40,24 @@
       "description": "Declared identifier of the agent. Leave empty if not declared.",
       "envVar": "EVIDE_AGENT_ID",
       "sensitive": false
+    },
+    {
+      "name": "Model reference (optional)",
+      "description": "Declared model name and version in use (e.g. claude-sonnet-4-6-20260514). Leave empty if not declared.",
+      "envVar": "EVIDE_MODEL_REFERENCE",
+      "sensitive": false
+    },
+    {
+      "name": "Agent name (optional)",
+      "description": "Declared human-readable label for the agent (e.g. Legal Intake Agent). Leave empty if not declared.",
+      "envVar": "EVIDE_AGENT_NAME",
+      "sensitive": false
+    },
+    {
+      "name": "Deployment ID (optional)",
+      "description": "Declared identifier of this deployment or version of the agent, distinct from the Agent ID. Leave empty if not declared.",
+      "envVar": "EVIDE_DEPLOYMENT_ID",
+      "sensitive": false
     }
   ]
 }
