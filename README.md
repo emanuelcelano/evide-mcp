@@ -150,13 +150,13 @@ Install as a Gemini CLI extension:
 gemini extensions install https://github.com/emanuelcelano/evide-mcp
 ```
 
-During installation Gemini CLI asks for the settings declared in `gemini-extension.json`: API key, DAPI number, owner ID, and the optional agent system and agent ID. To change them later:
+During installation Gemini CLI asks for the settings declared in `gemini-extension.json`: API key, DAPI number, owner ID, and the optional agent system, agent ID, model reference, agent name and deployment ID. Leave optional settings empty when not declared. To change them later:
 
 ```bash
 gemini extensions config evide-mcp
 ```
 
-Gemini CLI passes to the server only the variables declared in the manifest. `EVIDE_OWNER_ROLE`, `EVIDE_MODEL_REFERENCE`, `EVIDE_AGENT_NAME` and `EVIDE_DEPLOYMENT_ID` are therefore not available in this installation: the owner role falls back to its default and the other three are omitted.
+The manifest exposes the optional deployment-level execution context fields. Empty or whitespace-only values are omitted from `execution_identity`. `EVIDE_OWNER_ROLE` is not exposed in the manifest and uses the server default. Session ID and run ID remain optional call-time parameters, not installation settings.
 
 The extension runs `dist/evide-mcp.js`, a single-file bundle of `index.js` and its dependencies, so no `npm install` is needed. After changing `index.js`, rebuild it with:
 
