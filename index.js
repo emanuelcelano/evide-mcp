@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * EVIDE MCP Server v1.4.0
+ * EVIDE MCP Server v1.5.0
  * Connects any agentic AI system to the EVIDE Evidentiary Deposit API.
  *
  * IDENTITY REQUIREMENT:
@@ -21,6 +21,25 @@
  *   evide_escalate       - crystallize a high-stakes / contestable agent state before proceeding
  *   evide_owner_info     - return configured owner identity (no key exposure)
  *   evide_check          - verification guidance for a deposited record
+ *
+ * CHANGES IN v1.5.0:
+ *   - Closed chains (EVIDE API v2.3): a deposit whose parent_evide_id belongs to
+ *     a closed chain is refused by the server with 409 chain_closed. The client
+ *     now explains how to continue instead of only printing the error code.
+ *   - continues_closure_id parameter on evide_intake, evide_escalate and
+ *     evide_intake_esb: starts a new continuation chain from a closed one, sent
+ *     as chain.continues_closure_id. It cannot be combined with parent_evide_id
+ *     (checked by the client before any HTTP call). Closing a chain is not
+ *     possible through the API or this MCP server: it is done on the web.
+ *   - Specific messages for continuation_invalid (with reason and detail) and
+ *     chain_busy_retry (with the Retry-After value). The client does not retry
+ *     on its own: the caller decides.
+ *   - Partial ESB outcomes (request_recorded: true, for example
+ *     esb_not_opened_chain_closed or esb_initialization_failed) are reported as
+ *     "intake recorded, buffer not opened", with the evide_id of the recorded
+ *     intake, so that the agent does not deposit it again.
+ *   - Responses that are not JSON are reported with their HTTP status instead
+ *     of a parse exception.
  *
  * CHANGES IN v1.4.0:
  *   - execution_identity expanded: model_reference, agent_name, deployment_id
@@ -142,7 +161,7 @@ if (!CONFIG.apiKey || !CONFIG.dapiNumber || !CONFIG.ownerId) {
 // EVIDE API CLIENT
 // =============================================================================
 
-async function evidePost(payload, endpoint = CONFIG.apiEndpoint) {
+export async function evidePost(payload, endpoint = CONFIG.apiEndpoint) {
     const response = await fetch(endpoint, {
         method:  'POST',
         headers: {
@@ -151,7 +170,30 @@ async function evidePost(payload, endpoint = CONFIG.apiEndpoint) {
         },
         body: JSON.stringify(payload),
     });
-    return response.json();
+    // La risposta si legge come testo e poi si interpreta: un corpo non JSON
+    // (pagina di errore del server web, risposta vuota) diventa un esito
+    // leggibile con lo stato HTTP, non un'eccezione di parsing.
+    const status     = response.status;
+    const retryAfter = response.headers?.get?.('Retry-After') ?? null;
+    const raw        = await response.text();
+    let result;
+    try {
+        result = raw === '' ? null : JSON.parse(raw);
+    } catch {
+        result = null;
+    }
+    if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+        const excerpt = raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+        return {
+            success:     false,
+            error:       'non_json_response',
+            message:     `HTTP ${status}: the server did not return JSON` + (excerpt ? ` (${excerpt})` : ' (empty body)') + '. Whether anything was recorded is not known from this response.',
+            http_status: status,
+        };
+    }
+    result.http_status = status;
+    if (retryAfter !== null) result.retry_after = retryAfter;
+    return result;
 }
 
 // =============================================================================
@@ -514,7 +556,17 @@ function buildDeclarations(decls = []) {
     });
 }
 
-function buildChain(parentEvideId = null, chainType = null, matterReference = null) {
+export function buildChain(parentEvideId = null, chainType = null, matterReference = null, continuesClosureId = null) {
+    // Catena di integrazione (API v2.3): continues_closure_id avvia una NUOVA
+    // catena collegata a una catena chiusa. Il nuovo intake e' il primo record
+    // della nuova catena, quindi non puo' avere un genitore: il server lo
+    // rifiuterebbe con continuation_invalid / has_parent, il client lo ferma prima.
+    if (continuesClosureId && parentEvideId) {
+        throw new Error(
+            'continues_closure_id starts a new continuation chain and cannot be combined with parent_evide_id. ' +
+            'Remove parent_evide_id; later deposits in the new chain use parent_evide_id as usual.'
+        );
+    }
     const chain = {
         parent_evide_id: parentEvideId || null,
         chain_type:      chainType     || null,
@@ -522,6 +574,8 @@ function buildChain(parentEvideId = null, chainType = null, matterReference = nu
     // matter_reference si dichiara solo quando valorizzato: se omesso su un
     // figlio, il server lo eredita dal padre.
     if (matterReference) chain.matter_reference = matterReference;
+    // Si invia solo quando valorizzato: il server rifiuta null (invalid_format).
+    if (continuesClosureId) chain.continues_closure_id = continuesClosureId;
     return chain;
 }
 
@@ -632,6 +686,7 @@ export function buildIntakePayload({
     parentEvideId         = null,
     chainType             = null,
     matterReference       = null,
+    continuesClosureId    = null,
     evidenceReferences    = [],
     declarations          = [],
     readinessGateId       = null,
@@ -677,7 +732,7 @@ export function buildIntakePayload({
                 threshold_status: thresholdStatus,
             },
         },
-        chain: buildChain(parentEvideId, chainType, matterReference),
+        chain: buildChain(parentEvideId, chainType, matterReference, continuesClosureId),
         fedis_requested: fedisRequested,
         handoff: {
             boundary_readiness: buildBoundaryReadiness(boundaryStatus, unresolvedSignals, {
@@ -731,6 +786,7 @@ export function buildEscalatePayload({
     parentEvideId         = null,
     chainType             = null,
     matterReference       = null,
+    continuesClosureId    = null,
     evidenceReferences    = [],
     declarations          = [],
     sessionId             = null,
@@ -786,7 +842,7 @@ export function buildEscalatePayload({
                 threshold_status: thresholdStatus,
             },
         },
-        chain: buildChain(parentEvideId, chainType, matterReference),
+        chain: buildChain(parentEvideId, chainType, matterReference, continuesClosureId),
         fedis_requested: false,
         handoff: {
             boundary_readiness: readiness,
@@ -817,9 +873,65 @@ export function buildEscalatePayload({
 // RESPONSE FORMATTER
 // =============================================================================
 
-function formatEvideResponse(result, label = 'EVIDE deposit') {
+/**
+ * Rifiuti e esiti parziali (v1.5.0). Due casi da non confondere:
+ *   - rifiuto: nessun intake registrato (chain_closed, continuation_invalid,
+ *     chain_busy_retry, errori di validazione, ...);
+ *   - esito parziale: request_recorded === true. L'intake ESISTE (evide_id nella
+ *     risposta), solo il buffer ESB non e' stato aperto. Un agente che leggesse
+ *     "failed" potrebbe ridepositare: qui il testo dice il contrario.
+ */
+export function formatEvideFailure(result, label = 'EVIDE deposit') {
+    const code = result.error || 'unknown_error';
+    const msg  = result.message || '';
+
+    if (result.request_recorded === true) {
+        const lines = [
+            `${label}: the intake WAS RECORDED, but its buffer was not opened (${code}).`,
+            ``,
+            `evide_id:              ${result.evide_id || 'n/a'}`,
+        ];
+        if (result.esb_status) lines.push(`esb_status:            ${result.esb_status}`);
+        const chain = result.chain || {};
+        if (chain.chain_root_evide_id) {
+            lines.push(`chain_position:        ${chain.chain_position ?? 'n/a'}`);
+            lines.push(`chain_root_evide_id:   ${chain.chain_root_evide_id}`);
+        }
+        lines.push(``, msg, ``, `Do not deposit this record again: it already exists. The buffer will not be opened later.`);
+        return lines.join('\n');
+    }
+
+    const lines = [`${label} failed: ${code}`, msg];
+
+    if (code === 'chain_closed') {
+        lines.push(
+            ``,
+            `No intake was recorded. The chain of parent_evide_id has been closed and a closure is never reopened:`,
+            `retrying with the same parent returns the same refusal.`,
+            `To add material, start a continuation chain: call the tool again WITHOUT parent_evide_id and with`,
+            `continues_closure_id set to the closure_id of the closed chain (shown on the page of the closed chain`,
+            `on the EVIDE web platform and recorded in its frozen manifest).`
+        );
+    } else if (code === 'continuation_invalid') {
+        lines.push(``, `No intake was recorded.`, `reason:                ${result.reason || 'n/a'}`);
+        if (result.detail) lines.push(`detail:                ${result.detail}`);
+    } else if (code === 'chain_busy_retry') {
+        lines.push(
+            ``,
+            `No intake was recorded. This is temporary: another operation was using the chain at the same moment.`,
+            `Send the same call again after ${result.retry_after || 2} second(s) (Retry-After). The client does not retry on its own.`
+        );
+    } else if (code === 'non_json_response') {
+        // il messaggio contiene gia' stato HTTP ed estratto
+    } else if (result.http_status) {
+        lines.push(`HTTP status:           ${result.http_status}`);
+    }
+    return lines.join('\n');
+}
+
+export function formatEvideResponse(result, label = 'EVIDE deposit') {
     if (!result.success) {
-        return `${label} failed: ${result.error || 'unknown error'}\n${result.message || ''}`;
+        return formatEvideFailure(result, label);
     }
 
     const profile  = result.evidentiary_profile || {};
@@ -878,7 +990,7 @@ function formatEvideResponse(result, label = 'EVIDE deposit') {
 // =============================================================================
 
 export const server = new Server(
-    { name: 'evide-mcp', version: '1.4.0' },
+    { name: 'evide-mcp', version: '1.5.0' },
     { capabilities: { tools: {} } }
 );
 
@@ -1013,6 +1125,10 @@ For high-stakes or contestable states, use evide_escalate instead.`,
                     matter_reference: {
                         type: 'string',
                         description: 'Optional: identifier of the matter this lineage belongs to. Inherited from the parent when omitted. If declared on both sides it must match exactly - this is what prevents an incorrect parent_evide_id from silently attaching a decision to an unrelated matter inside the same organization.',
+                    },
+                    continues_closure_id: {
+                        type: 'string',
+                        description: 'Optional (EVIDE API v2.3): the closure_id of a CLOSED chain. Starts a new continuation chain whose first record is this deposit, linked to the closed chain; the closed chain itself is never modified or reopened. Use it when a deposit with parent_evide_id was refused with chain_closed. Cannot be combined with parent_evide_id. The closed chain must belong to the same evidentiary domain as the API key, and the user bound to the API key must have full access to it; otherwise the server refuses with continuation_invalid. Closing a chain is not possible through this server: it is done on the EVIDE web platform.',
                     },
                     session_id: {
                         type: 'string',
@@ -1154,6 +1270,10 @@ Returns evide_id and intake_hash for the independently timestamped evidentiary r
                         type: 'string',
                         description: 'Optional: identifier of the matter this lineage belongs to. Inherited from the parent when omitted. If declared on both sides it must match exactly.',
                     },
+                    continues_closure_id: {
+                        type: 'string',
+                        description: 'Optional (EVIDE API v2.3): the closure_id of a CLOSED chain. Starts a new continuation chain whose first record is this deposit, linked to the closed chain; the closed chain itself is never modified or reopened. Use it when a deposit with parent_evide_id was refused with chain_closed. Cannot be combined with parent_evide_id. The closed chain must belong to the same evidentiary domain as the API key, and the user bound to the API key must have full access to it; otherwise the server refuses with continuation_invalid. Closing a chain is not possible through this server: it is done on the EVIDE web platform.',
+                    },
                     session_id: {
                         type: 'string',
                         description: 'Optional: declared identifier of the broader interaction/session associated with this escalation, if your system has one. Call-time only - there is no client configuration equivalent for this MCP client. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path.',
@@ -1210,6 +1330,7 @@ Returns evide_id, intake_hash, the evidentiary profile, and a buffer_id. Keep th
                     parent_evide_id:       { type: 'string', description: 'Optional: record this one continues from.' },
                     chain_type:            { type: 'string' },
                     matter_reference:      { type: 'string' },
+                    continues_closure_id:  { type: 'string', description: 'Optional (EVIDE API v2.3): closure_id of a closed chain; starts a continuation chain from it. Not combinable with parent_evide_id.' },
                     evidence_references: {
                         type: 'array',
                         description: 'Optional: external artifacts this record refers to (screenshots, video, sensor logs, documents). EVIDE anchors the DECLARATION that the artifact exists - the file itself is never uploaded, and EVIDE never computes or verifies its hash. Declaring the array automatically sets the required extensions registry entry.',
@@ -1368,6 +1489,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 parentEvideId:        args.parent_evide_id         || null,
                 chainType:            args.chain_type              || null,
                 matterReference:      args.matter_reference        || null,
+                continuesClosureId:   args.continues_closure_id    || null,
                 evidenceReferences:   args.evidence_references     || [],
                 declarations:         args.declarations            || [],
                 readinessGateId:      args.readiness_gate_id       || null,
@@ -1407,6 +1529,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 parentEvideId:       args.parent_evide_id     || null,
                 chainType:           args.chain_type          || null,
                 matterReference:     args.matter_reference    || null,
+                continuesClosureId:  args.continues_closure_id || null,
                 evidenceReferences:  args.evidence_references || [],
                 declarations:        args.declarations        || [],
                 readinessGateId:     args.readiness_gate_id   || null,
@@ -1459,6 +1582,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 parentEvideId:        args.parent_evide_id         || null,
                 chainType:            args.chain_type              || null,
                 matterReference:      args.matter_reference        || null,
+                continuesClosureId:   args.continues_closure_id    || null,
                 evidenceReferences:   args.evidence_references     || [],
                 declarations:         args.declarations            || [],
                 readinessGateId:      args.readiness_gate_id       || null,
@@ -1548,7 +1672,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{
                 type: 'text',
                 text: [
-                    `EVIDE MCP v1.4.0 - Identity Configuration`,
+                    `EVIDE MCP v1.5.0 - Identity Configuration`,
                     ``,
                     `ACCOUNTABLE IDENTITY (owner - DAPI-bound):`,
                     `  Owner ID:    ${CONFIG.ownerId}`,
@@ -1613,7 +1737,7 @@ if (process.env.EVIDE_MCP_TEST_IMPORT !== '1') {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     process.stderr.write(
-        `[EVIDE MCP v1.4.0] Server started.\n` +
+        `[EVIDE MCP v1.5.0] Server started.\n` +
         `  Owner: ${CONFIG.ownerId} | Agent: ${CONFIG.agentId ?? '(not declared)'} / ${CONFIG.agentSystem ?? '(not declared)'}\n` +
         `  Credentials: present. Key validity verified at first deposit.\n`
     );

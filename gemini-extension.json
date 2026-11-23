@@ -1,6 +1,6 @@
 {
   "name": "evide-mcp",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Deposit evidentiary records of AI agent decisions into EVIDE (External Evidentiary Deposit). Requires a DAPI verified identity and an active EVIDE subscription.",
   "mcpServers": {
     "evide": {

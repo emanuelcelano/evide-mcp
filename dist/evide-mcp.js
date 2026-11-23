@@ -3338,6 +3338,37 @@ var require_utils = __commonJS({
       }
       return output.join("");
     }
+    function removeDotSegmentsRelative(path) {
+      if (path === "" || path[0] === "/") {
+        return removeDotSegments(path);
+      }
+      const segments = path.split("/");
+      const last = segments.length - 1;
+      const output = [];
+      let trailingDirectory = false;
+      for (let i = 0; i <= last; i++) {
+        const segment = segments[i];
+        if (segment === "." || segment === "..") {
+          if (segment === "..") {
+            if (output.length !== 0 && output[output.length - 1] !== "..") {
+              output.pop();
+            } else {
+              output.push("..");
+            }
+          }
+          trailingDirectory = i === last;
+        } else {
+          output.push(segment);
+        }
+      }
+      if (trailingDirectory && output[output.length - 1] !== "..") {
+        output.push("");
+      }
+      if (output.length === 0 || output[0] === "" || output[0].includes(":")) {
+        output.unshift(".");
+      }
+      return output.join("/");
+    }
     var HOST_DELIMS = { "@": "%40", "/": "%2F", "?": "%3F", "#": "%23", ":": "%3A" };
     var HOST_DELIM_RE = /[@/?#:]/g;
     var HOST_DELIM_NO_COLON_RE = /[@/?#]/g;
@@ -3598,6 +3629,7 @@ var require_utils = __commonJS({
       encodeFragment,
       escapePreservingEscapes,
       removeDotSegments,
+      removeDotSegmentsRelative,
       isIPv4,
       isUUID,
       normalizeIPv6,
@@ -3821,16 +3853,18 @@ var require_schemes = __commonJS({
 var require_fast_uri = __commonJS({
   "node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
-    var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
+    var { normalizeIPv6, removeDotSegments, removeDotSegmentsRelative, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
     var VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u;
     var MALFORMED_SCHEME_ERROR = "URI scheme is malformed.";
-    function decodeValidScheme(scheme) {
-      const decodedScheme = unescape(String(scheme));
-      if (!VALID_SCHEME.test(decodedScheme)) {
+    var MALFORMED_HOST_ERROR = "URI host is malformed.";
+    var FORBIDDEN_DOMAIN_HOST_CHARACTER = /[\0-\x20"#/:<>?@[\\\]^`{|}\x7F]/u;
+    function validateScheme(scheme) {
+      const stringScheme = String(scheme);
+      if (!VALID_SCHEME.test(stringScheme)) {
         throw new TypeError(MALFORMED_SCHEME_ERROR);
       }
-      return decodedScheme;
+      return stringScheme;
     }
     function normalize(uri, options) {
       if (typeof uri === "string") {
@@ -3867,6 +3901,9 @@ var require_fast_uri = __commonJS({
       const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved.scheme);
       const resolvedHost = resolved.host;
       const resolvedHostIsIP = resolvedHost !== void 0 && resolvedHost !== "" && (isIPv4(resolvedHost) || normalizeIPv6(resolvedHost).isIPV6);
+      if (hasForbiddenDomainHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP)) {
+        throw new Error(MALFORMED_HOST_ERROR);
+      }
       canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
       const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
       if (resolved.error && !encodedASCIIHost) {
@@ -3908,14 +3945,15 @@ var require_fast_uri = __commonJS({
             if (relative.path[0] === "/") {
               target.path = removeDotSegments(relative.path);
             } else {
-              if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
+              const baseHasAuthority = base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0;
+              if (baseHasAuthority && !base.path) {
                 target.path = "/" + relative.path;
               } else if (!base.path) {
                 target.path = relative.path;
               } else {
                 target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
               }
-              target.path = removeDotSegments(target.path);
+              target.path = base.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
             }
             target.query = relative.query;
           }
@@ -3953,12 +3991,13 @@ var require_fast_uri = __commonJS({
       const options = Object.assign({}, opts);
       const uriTokens = [];
       if (component.scheme) {
-        component.scheme = decodeValidScheme(component.scheme);
+        component.scheme = validateScheme(component.scheme);
       }
       const schemeHandler = getSchemeHandler(options.scheme || component.scheme);
       if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options);
       const hasAuthority = component.userinfo !== void 0 || component.host !== void 0 || component.port !== void 0;
-      const pathNoScheme = !options.skipEscape && component.scheme === void 0 && !hasAuthority;
+      const schemelessReference = (component.scheme === void 0 || options.reference === "suffix") && !hasAuthority;
+      const pathNoScheme = !options.skipEscape && schemelessReference;
       if (component.path !== void 0) {
         if (!options.skipEscape) {
           component.path = serializePathEncoding(component.path, pathNoScheme);
@@ -3967,7 +4006,7 @@ var require_fast_uri = __commonJS({
         }
       }
       if (options.reference !== "suffix" && component.scheme) {
-        component.scheme = decodeValidScheme(component.scheme);
+        component.scheme = validateScheme(component.scheme);
         uriTokens.push(component.scheme, ":");
       }
       const authority = recomposeAuthority(component);
@@ -3983,9 +4022,9 @@ var require_fast_uri = __commonJS({
       if (component.path !== void 0) {
         let s = component.path;
         if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
-          s = removeDotSegments(s);
+          s = schemelessReference && s[0] !== "/" ? removeDotSegmentsRelative(s) : removeDotSegments(s);
         }
-        if (pathNoScheme) {
+        if (schemelessReference) {
           s = serializePathEncoding(s, true);
         }
         if (authority === void 0 && s[0] === "/" && s[1] === "/") {
@@ -4032,15 +4071,33 @@ var require_fast_uri = __commonJS({
       return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
     }
     function canonicalizeHost(parsed, options, schemeHandler, isIP) {
+      if (hasForbiddenDomainHost(parsed, options, schemeHandler, isIP)) {
+        parsed.error = parsed.error || MALFORMED_HOST_ERROR;
+        return true;
+      }
       if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
+        let url;
         try {
-          parsed.host = new URL("http://" + parsed.host).hostname;
+          url = new URL("http://" + parsed.host);
         } catch (e) {
           parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
           return true;
         }
+        if (!isHostOnlyURL(url)) {
+          parsed.error = parsed.error || MALFORMED_HOST_ERROR;
+          return true;
+        }
+        parsed.host = url.hostname;
       }
       return false;
+    }
+    function hasForbiddenDomainHost(parsed, options, schemeHandler, isIP) {
+      return Boolean(
+        parsed.host && isIP === false && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && FORBIDDEN_DOMAIN_HOST_CHARACTER.test(parsed.host)
+      );
+    }
+    function isHostOnlyURL(url) {
+      return url.username === "" && url.password === "" && url.port === "" && url.pathname === "/" && url.search === "" && url.hash === "" && url.hostname !== "";
     }
     function parseWithStatus(uri, opts) {
       const options = Object.assign({}, opts);
@@ -4096,9 +4153,8 @@ var require_fast_uri = __commonJS({
         parsed.query = matches[7];
         parsed.fragment = matches[8];
         if (parsed.scheme !== void 0) {
-          const decodedScheme = unescape(parsed.scheme);
-          if (VALID_SCHEME.test(decodedScheme)) {
-            parsed.scheme = decodedScheme.toLowerCase();
+          if (VALID_SCHEME.test(parsed.scheme)) {
+            parsed.scheme = parsed.scheme.toLowerCase();
           } else {
             parsed.error = parsed.error || MALFORMED_SCHEME_ERROR;
             malformedScheme = true;
@@ -4126,7 +4182,7 @@ var require_fast_uri = __commonJS({
             malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
             parsed.host = isIP ? ipv6result.host : ipv6result.host.toLowerCase();
             if (malformedIPLiteral) {
-              parsed.error = parsed.error || "URI host is malformed.";
+              parsed.error = parsed.error || MALFORMED_HOST_ERROR;
               malformedAuthorityOrPort = true;
             }
           } else {
@@ -4154,7 +4210,7 @@ var require_fast_uri = __commonJS({
           if (!isIP) {
             host = normalizePercentEncoding(host.toLowerCase());
           }
-          parsed.host = reescapeHostDelimiters(host, isIP);
+          parsed.host = isIP || options.scheme !== "null" ? reescapeHostDelimiters(host, isIP) : host;
         }
         if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
           if (parsed.path) {
@@ -7271,6 +7327,7 @@ __export(util_exports, {
   required: () => required,
   safeExtend: () => safeExtend,
   shallowClone: () => shallowClone,
+  sizeCaps: () => sizeCaps,
   slugify: () => slugify,
   stringifyPrimitive: () => stringifyPrimitive,
   toZod: () => toZod,
@@ -7789,6 +7846,18 @@ function prefixIssues(path, issues) {
 }
 function unwrapMessage(message) {
   return typeof message === "string" ? message : message?.message;
+}
+function sizeCaps(defChecks) {
+  const caps = [];
+  for (const ch of defChecks ?? []) {
+    const d = ch._zod.def;
+    if (!/_(length|size)$|_equals$/.test(d.check))
+      break;
+    const max = d.maximum ?? d.length ?? d.size;
+    if (max >= 0)
+      caps.push([max, ch]);
+  }
+  return caps;
 }
 function attachSchema(issues, start, inst) {
   var _a3;
@@ -8849,7 +8918,7 @@ ${content.join("\n")}
 var version = {
   major: 4,
   minor: 6,
-  patch: 5
+  patch: 7
 };
 
 // node_modules/zod/v4/core/schemas.js
@@ -9423,6 +9492,29 @@ var $ZodNever = /* @__PURE__ */ $constructor("$ZodNever", (inst, def) => {
     return payload;
   };
 });
+function capSize(inst, size) {
+  const caps = sizeCaps(inst._zod.def.checks);
+  if (!caps.length)
+    return;
+  const cap = Math.min(...caps.map((c) => c[0]));
+  const parse3 = inst._zod.parse;
+  inst._zod.parse = (payload, ctx) => {
+    const n = size(payload.value);
+    if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
+      for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
+        if (n > max && ch._zod.def.when(payload)) {
+          const start = payload.issues.length;
+          ch._zod.check(payload);
+          payload.issues[start].continue = false;
+          attachSchema(payload.issues, start, inst);
+          return payload;
+        }
+      }
+    }
+    return parse3(payload, ctx);
+  };
+}
+var arraySize = (input) => Array.isArray(input) ? input.length : -1;
 function handleArrayResult(result, final, index) {
   if (result.issues.length) {
     final.issues.push(...prefixIssues(index, result.issues));
@@ -9466,6 +9558,7 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     }
     return payload;
   };
+  capSize(inst, arraySize);
 });
 function handlePropertyResult(result, final, key, input, optin, optout) {
   const isPresent = key in input;
@@ -16991,7 +17084,27 @@ async function evidePost(payload, endpoint = CONFIG.apiEndpoint) {
     },
     body: JSON.stringify(payload)
   });
-  return response.json();
+  const status = response.status;
+  const retryAfter = response.headers?.get?.("Retry-After") ?? null;
+  const raw = await response.text();
+  let result;
+  try {
+    result = raw === "" ? null : JSON.parse(raw);
+  } catch {
+    result = null;
+  }
+  if (result === null || typeof result !== "object" || Array.isArray(result)) {
+    const excerpt = raw.replace(/\s+/g, " ").trim().slice(0, 200);
+    return {
+      success: false,
+      error: "non_json_response",
+      message: `HTTP ${status}: the server did not return JSON` + (excerpt ? ` (${excerpt})` : " (empty body)") + ". Whether anything was recorded is not known from this response.",
+      http_status: status
+    };
+  }
+  result.http_status = status;
+  if (retryAfter !== null) result.retry_after = retryAfter;
+  return result;
 }
 var BUFFER_ENUMS = {
   stability_trend: ["improving", "degrading", "oscillating", "static"],
@@ -17226,12 +17339,18 @@ function buildDeclarations(decls = []) {
     return out;
   });
 }
-function buildChain(parentEvideId = null, chainType = null, matterReference = null) {
+function buildChain(parentEvideId = null, chainType = null, matterReference = null, continuesClosureId = null) {
+  if (continuesClosureId && parentEvideId) {
+    throw new Error(
+      "continues_closure_id starts a new continuation chain and cannot be combined with parent_evide_id. Remove parent_evide_id; later deposits in the new chain use parent_evide_id as usual."
+    );
+  }
   const chain = {
     parent_evide_id: parentEvideId || null,
     chain_type: chainType || null
   };
   if (matterReference) chain.matter_reference = matterReference;
+  if (continuesClosureId) chain.continues_closure_id = continuesClosureId;
   return chain;
 }
 function buildBoundaryReadiness(status, unresolvedSignals = [], gate = {}) {
@@ -17297,6 +17416,7 @@ function buildIntakePayload({
   parentEvideId = null,
   chainType = null,
   matterReference = null,
+  continuesClosureId = null,
   evidenceReferences = [],
   declarations = [],
   readinessGateId = null,
@@ -17341,7 +17461,7 @@ function buildIntakePayload({
         threshold_status: thresholdStatus
       }
     },
-    chain: buildChain(parentEvideId, chainType, matterReference),
+    chain: buildChain(parentEvideId, chainType, matterReference, continuesClosureId),
     fedis_requested: fedisRequested,
     handoff: {
       boundary_readiness: buildBoundaryReadiness(boundaryStatus, unresolvedSignals, {
@@ -17382,6 +17502,7 @@ function buildEscalatePayload({
   parentEvideId = null,
   chainType = null,
   matterReference = null,
+  continuesClosureId = null,
   evidenceReferences = [],
   declarations = [],
   sessionId = null,
@@ -17429,7 +17550,7 @@ function buildEscalatePayload({
         threshold_status: thresholdStatus
       }
     },
-    chain: buildChain(parentEvideId, chainType, matterReference),
+    chain: buildChain(parentEvideId, chainType, matterReference, continuesClosureId),
     fedis_requested: false,
     handoff: {
       boundary_readiness: readiness,
@@ -17451,10 +17572,52 @@ function buildEscalatePayload({
   }
   return payload;
 }
+function formatEvideFailure(result, label = "EVIDE deposit") {
+  const code = result.error || "unknown_error";
+  const msg = result.message || "";
+  if (result.request_recorded === true) {
+    const lines2 = [
+      `${label}: the intake WAS RECORDED, but its buffer was not opened (${code}).`,
+      ``,
+      `evide_id:              ${result.evide_id || "n/a"}`
+    ];
+    if (result.esb_status) lines2.push(`esb_status:            ${result.esb_status}`);
+    const chain = result.chain || {};
+    if (chain.chain_root_evide_id) {
+      lines2.push(`chain_position:        ${chain.chain_position ?? "n/a"}`);
+      lines2.push(`chain_root_evide_id:   ${chain.chain_root_evide_id}`);
+    }
+    lines2.push(``, msg, ``, `Do not deposit this record again: it already exists. The buffer will not be opened later.`);
+    return lines2.join("\n");
+  }
+  const lines = [`${label} failed: ${code}`, msg];
+  if (code === "chain_closed") {
+    lines.push(
+      ``,
+      `No intake was recorded. The chain of parent_evide_id has been closed and a closure is never reopened:`,
+      `retrying with the same parent returns the same refusal.`,
+      `To add material, start a continuation chain: call the tool again WITHOUT parent_evide_id and with`,
+      `continues_closure_id set to the closure_id of the closed chain (shown on the page of the closed chain`,
+      `on the EVIDE web platform and recorded in its frozen manifest).`
+    );
+  } else if (code === "continuation_invalid") {
+    lines.push(``, `No intake was recorded.`, `reason:                ${result.reason || "n/a"}`);
+    if (result.detail) lines.push(`detail:                ${result.detail}`);
+  } else if (code === "chain_busy_retry") {
+    lines.push(
+      ``,
+      `No intake was recorded. This is temporary: another operation was using the chain at the same moment.`,
+      `Send the same call again after ${result.retry_after || 2} second(s) (Retry-After). The client does not retry on its own.`
+    );
+  } else if (code === "non_json_response") {
+  } else if (result.http_status) {
+    lines.push(`HTTP status:           ${result.http_status}`);
+  }
+  return lines.join("\n");
+}
 function formatEvideResponse(result, label = "EVIDE deposit") {
   if (!result.success) {
-    return `${label} failed: ${result.error || "unknown error"}
-${result.message || ""}`;
+    return formatEvideFailure(result, label);
   }
   const profile = result.evidentiary_profile || {};
   const fccState = profile.continuity?.state || "unknown";
@@ -17498,7 +17661,7 @@ ${result.message || ""}`;
   return lines.join("\n");
 }
 var server = new Server(
-  { name: "evide-mcp", version: "1.4.0" },
+  { name: "evide-mcp", version: "1.5.0" },
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -17629,6 +17792,10 @@ For high-stakes or contestable states, use evide_escalate instead.`,
           matter_reference: {
             type: "string",
             description: "Optional: identifier of the matter this lineage belongs to. Inherited from the parent when omitted. If declared on both sides it must match exactly - this is what prevents an incorrect parent_evide_id from silently attaching a decision to an unrelated matter inside the same organization."
+          },
+          continues_closure_id: {
+            type: "string",
+            description: "Optional (EVIDE API v2.3): the closure_id of a CLOSED chain. Starts a new continuation chain whose first record is this deposit, linked to the closed chain; the closed chain itself is never modified or reopened. Use it when a deposit with parent_evide_id was refused with chain_closed. Cannot be combined with parent_evide_id. The closed chain must belong to the same evidentiary domain as the API key, and the user bound to the API key must have full access to it; otherwise the server refuses with continuation_invalid. Closing a chain is not possible through this server: it is done on the EVIDE web platform."
           },
           session_id: {
             type: "string",
@@ -17769,6 +17936,10 @@ Returns evide_id and intake_hash for the independently timestamped evidentiary r
             type: "string",
             description: "Optional: identifier of the matter this lineage belongs to. Inherited from the parent when omitted. If declared on both sides it must match exactly."
           },
+          continues_closure_id: {
+            type: "string",
+            description: "Optional (EVIDE API v2.3): the closure_id of a CLOSED chain. Starts a new continuation chain whose first record is this deposit, linked to the closed chain; the closed chain itself is never modified or reopened. Use it when a deposit with parent_evide_id was refused with chain_closed. Cannot be combined with parent_evide_id. The closed chain must belong to the same evidentiary domain as the API key, and the user bound to the API key must have full access to it; otherwise the server refuses with continuation_invalid. Closing a chain is not possible through this server: it is done on the EVIDE web platform."
+          },
           session_id: {
             type: "string",
             description: "Optional: declared identifier of the broader interaction/session associated with this escalation, if your system has one. Call-time only - there is no client configuration equivalent for this MCP client. EVIDE preserves it as declared; it does not verify, generate, or authenticate it, or independently confirm this was its only possible input path."
@@ -17823,6 +17994,7 @@ Returns evide_id, intake_hash, the evidentiary profile, and a buffer_id. Keep th
           parent_evide_id: { type: "string", description: "Optional: record this one continues from." },
           chain_type: { type: "string" },
           matter_reference: { type: "string" },
+          continues_closure_id: { type: "string", description: "Optional (EVIDE API v2.3): closure_id of a closed chain; starts a continuation chain from it. Not combinable with parent_evide_id." },
           evidence_references: {
             type: "array",
             description: "Optional: external artifacts this record refers to (screenshots, video, sensor logs, documents). EVIDE anchors the DECLARATION that the artifact exists - the file itself is never uploaded, and EVIDE never computes or verifies its hash. Declaring the array automatically sets the required extensions registry entry.",
@@ -18000,6 +18172,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         parentEvideId: args.parent_evide_id || null,
         chainType: args.chain_type || null,
         matterReference: args.matter_reference || null,
+        continuesClosureId: args.continues_closure_id || null,
         evidenceReferences: args.evidence_references || [],
         declarations: args.declarations || [],
         readinessGateId: args.readiness_gate_id || null,
@@ -18033,6 +18206,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         parentEvideId: args.parent_evide_id || null,
         chainType: args.chain_type || null,
         matterReference: args.matter_reference || null,
+        continuesClosureId: args.continues_closure_id || null,
         evidenceReferences: args.evidence_references || [],
         declarations: args.declarations || [],
         readinessGateId: args.readiness_gate_id || null,
@@ -18078,6 +18252,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         parentEvideId: args.parent_evide_id || null,
         chainType: args.chain_type || null,
         matterReference: args.matter_reference || null,
+        continuesClosureId: args.continues_closure_id || null,
         evidenceReferences: args.evidence_references || [],
         declarations: args.declarations || [],
         readinessGateId: args.readiness_gate_id || null,
@@ -18149,7 +18324,7 @@ between opening and closing: a buffer that closes instantly observed nothing.`;
       content: [{
         type: "text",
         text: [
-          `EVIDE MCP v1.4.0 - Identity Configuration`,
+          `EVIDE MCP v1.5.0 - Identity Configuration`,
           ``,
           `ACCOUNTABLE IDENTITY (owner - DAPI-bound):`,
           `  Owner ID:    ${CONFIG.ownerId}`,
@@ -18200,7 +18375,7 @@ if (process.env.EVIDE_MCP_TEST_IMPORT !== "1") {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write(
-    `[EVIDE MCP v1.4.0] Server started.
+    `[EVIDE MCP v1.5.0] Server started.
   Owner: ${CONFIG.ownerId} | Agent: ${CONFIG.agentId ?? "(not declared)"} / ${CONFIG.agentSystem ?? "(not declared)"}
   Credentials: present. Key validity verified at first deposit.
 `
@@ -18208,9 +18383,13 @@ if (process.env.EVIDE_MCP_TEST_IMPORT !== "1") {
 }
 export {
   CONFIG,
+  buildChain,
   buildEscalatePayload,
   buildExecutionIdentity,
   buildIntakePayload,
+  evidePost,
+  formatEvideFailure,
+  formatEvideResponse,
   meaningfulValue,
   server
 };

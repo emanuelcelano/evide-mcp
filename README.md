@@ -2,13 +2,26 @@
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-blue)
 ![MCP Compatible](https://img.shields.io/badge/MCP-compatible-success)
 
-# EVIDE MCP Server v1.4.0
+# EVIDE MCP Server v1.5.0
 
 MCP server connecting AI agents to the [EVIDE External Evidentiary Deposit](https://app.certifywebcontent.com) API.
 
 EVIDE crystallizes AI agent decisions, escalations, and governance states into independently verifiable forensic records -- anchored to a verified human identity, timestamped server-side in UTC, and externalized before consequence propagation begins.
 
 > EVIDE is not an execution-control layer. It is an external evidentiary crystallization layer operating at the responsibility closure boundary.
+
+---
+
+## What's New in v1.5.0
+
+- **Closed chains (EVIDE API v2.3).** A chain can now be closed explicitly on the EVIDE web platform. A deposit whose `parent_evide_id` belongs to a closed chain is refused by the server with `409 chain_closed`: no intake is recorded and the closed chain is never reopened. The client now explains what to do next instead of printing only the error code.
+- **New optional parameter `continues_closure_id`** on `evide_intake`, `evide_escalate` and `evide_intake_esb`. It starts a new continuation chain linked to a closed one, and is sent as `chain.continues_closure_id`. It cannot be combined with `parent_evide_id`: the client refuses the combination before any network call. See [Closed Chains and Continuation Chains](#closed-chains-and-continuation-chains) below.
+- **Closing a chain is not possible through this server.** Neither API keys nor MCP tools can close a chain: closure is a deliberate human act on the web platform.
+- **Readable refusals for the new chain codes.** `continuation_invalid` is reported with its `reason` (and `detail` when present); `chain_busy_retry` is reported with the `Retry-After` value. The client does not retry on its own: the caller decides whether to send the call again.
+- **Partial ESB outcomes are no longer reported as failures.** When the server answers with `request_recorded: true` (for example `esb_not_opened_chain_closed` or `esb_initialization_failed`), the intake exists and only its buffer was not opened. The client says so, shows the `evide_id` of the recorded intake, and tells the agent not to deposit it again.
+- **Non-JSON responses** (an error page from the web server, an empty body) are reported with their HTTP status instead of a parse exception, and the client states that whether anything was recorded is not known from that response.
+- **Fully backward-compatible.** Calls built as under v1.4.0 produce the same payload under v1.5.0. Successful responses are formatted as before.
+- **How v1.5.0 was tested.** A new test suite (`test/chain-closure.test.mjs`) runs the real handlers against a simulated HTTP layer that returns the response bodies documented for API v2.3. The two suites together pass 31 of 31 tests. The bundled server (`dist/evide-mcp.js`) was also run over JSON-RPC on stdio against a local mock HTTP server, covering each new refusal, a continuation deposit and the partial ESB outcome. v1.5.0 has not yet been exercised against the production API through a real MCP client.
 
 ---
 
@@ -273,6 +286,36 @@ Chain validation is strict and has no silent fallback. If the parent does not ex
 
 Returns: `evide_id`, `intake_hash`, `intake_timestamp_utc`, `profile_version`, Forensic Cross-Check state, DWC and FAC states when present, and — when the record continues from another — `chain_position`, `chain_type` and `chain_root_evide_id`.
 
+### Closed Chains and Continuation Chains
+
+Since EVIDE API v2.3 a chain can be closed explicitly. Closing is done by a person on the EVIDE web platform; it is not available to API keys or to this MCP server. A closed chain stays as it was at closure: it is never reopened, and nothing can be appended to it.
+
+A deposit whose `parent_evide_id` belongs to a closed chain is refused with `chain_closed` (HTTP 409). No intake is recorded, and sending the same call again returns the same refusal. To add material after a closure, start a **continuation chain**: call the tool again **without** `parent_evide_id` and with `continues_closure_id` set to the `closure_id` of the closed chain. The `closure_id` is shown on the page of the closed chain on the web platform and is recorded in its frozen manifest.
+
+```
+{
+  "source_reference": "CDR-2026-00501",
+  "decision_type": "claim_assessment",
+  "decision_summary": "New document received after the claim file was closed.",
+  "continues_closure_id": "6b1f0c2e-8a4d-4c1e-9f3a-2d7e5b9c1a04",
+  "chain_type": "post_closure_addition"
+}
+```
+
+The deposit becomes the first record of the new chain, linked to the closed one; the closed chain itself is not modified. Later deposits in the new chain use `parent_evide_id` as usual.
+
+`continues_closure_id` is checked by the server, and a deposit that cannot start a continuation is refused with `continuation_invalid` (HTTP 422). The response carries a `reason`:
+
+| reason | meaning |
+|---|---|
+| `invalid_format` | the value is not a valid closure identifier |
+| `not_found` | no closure with that identifier exists |
+| `has_parent` | `parent_evide_id` was declared together with `continues_closure_id` (the client already refuses this combination before sending) |
+| `other_domain` | the closed chain belongs to a different evidentiary domain than the API key |
+| `not_authorized` | the user bound to the API key does not have full access to the closed chain |
+
+A deposit can also be refused with `chain_busy_retry` (HTTP 503, `Retry-After: 2`) when another operation is using the same chain at that moment. No intake is recorded; the same call can be sent again after the indicated seconds. The client reports the refusal and the `Retry-After` value, and does not retry on its own.
+
 ---
 
 ### `evide_escalate`
@@ -289,7 +332,7 @@ Crystallize the agent state **before proceeding** at a high-stakes or contestabl
 }
 ```
 
-`evide_escalate` accepts the same optional chain, `evidence_references` and `declarations` parameters as `evide_intake`, for the case where one escalation continues from another.
+`evide_escalate` accepts the same optional chain parameters (including `continues_closure_id`), `evidence_references` and `declarations` as `evide_intake`, for the case where one escalation continues from another.
 
 **`agent_state_summary` feeds the same title field as `decision_summary` above - keep it short for the same reason.** The fuller picture belongs in `escalation_reason`, which already exists for exactly that.
 
@@ -387,6 +430,8 @@ Three additional tools let an agent drive the full ESB lifecycle:
 | `evide_buffer_close` | closes the buffer with a verdict. |
 
 The closure is anchored immediately, exactly as with `evide_intake`: the buffer opens **alongside** it, it does not delay or replace it. What the buffer adds is the trajectory — how the conditions settled over a real window, rather than only what they were at the crossing.
+
+**An intake can be recorded even when its buffer is not opened.** If the server records the intake but cannot open the buffer, it answers with `request_recorded: true`, the `evide_id` of the recorded intake and `esb_status: "not_initialized"`. This happens with `esb_not_opened_chain_closed` (HTTP 409: the chain of the intake was closed after the intake was recorded and before the buffer was opened) and with `esb_initialization_failed` (HTTP 500). The client reports this as "intake recorded, buffer not opened", not as a failure, so that the agent does not deposit the same record a second time. The buffer is not opened later.
 
 **A real observation window is required.** The server refuses a close occurring less than two seconds after the open, because a buffer that closes instantly observed nothing. The measured window comes back as `window_seconds`. `test_mode: true` bypasses this, and is exposed only because the server accepts it: a buffer closed in test mode did not observe a real window, and the record will not pretend otherwise.
 
